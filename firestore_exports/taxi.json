@@ -1,0 +1,15 @@
+[
+  {
+    "name": "Taxi Driver Bob",
+    "city": "Limbe",
+    "timestamp": "2025-06-07T03:29:39.275000+00:00",
+    "Capacity": 5,
+    "Status": "Open",
+    "available": true,
+    "location": {
+      "placeName": "Mile 4 park"
+    },
+    "vehicleType": "Taxi",
+    "id": "OIJyxwmu0tcHhRxd9dXd"
+  }
+]
