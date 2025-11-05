@@ -1,0 +1,26 @@
+# deployment/k8s/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bloodonal-fastapi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bloodonal-fastapi
+  template:
+    metadata:
+      labels:
+        app: bloodonal-fastapi
+    spec:
+      containers:
+      - name: bloodonal
+        image: gcr.io/YOUR_PROJECT_ID/bloodonal-fastapi
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: DB_USER

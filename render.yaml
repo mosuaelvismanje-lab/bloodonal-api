@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: bloodonal-api
+    env: python
+    region: frankfurt  # or oregon, singapore, etc.
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bloodonal-db
+          property: connectionString
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: ENVIRONMENT
+        value: "production"
+      - key: FIREBASE_CREDENTIALS_PATH
+        value: "/etc/secrets/firebase.json"
+    secrets:
+      - name: firebase.json
+        mountPath: /etc/secrets/firebase.json
+
+databases:
+  - name: bloodonal-db

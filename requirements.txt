@@ -1,0 +1,12 @@
+fastapi~=0.115.13
+uvicorn
+python-dotenv
+SQLAlchemy~=2.0.41
+psycopg2-binary~=2.9.10
+pydantic~=2.11.7
+httpx~=0.28.1
+firebase-admin~=6.9.0
+apscheduler
+
+pydantic-settings~=2.10.0
+alembic~=1.16.2
