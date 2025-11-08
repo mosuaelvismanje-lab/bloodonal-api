@@ -1,9 +1,10 @@
 # app/config.py
 from typing import List, Optional, Union, Annotated
-from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
 from pathlib import Path
 from urllib.parse import urlparse
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
+
 
 class Settings(BaseSettings):
     # === PostgreSQL DB Credentials (individual vars) ===
@@ -13,7 +14,7 @@ class Settings(BaseSettings):
     DB_PORT: int = 5432
     DB_NAME: Optional[str] = None
 
-    # Optional single connection string (psql://... or postgresql://...)
+    # Optional single connection string (psql://... or postgresql://... or postgres://...)
     DATABASE_URL: Optional[str] = None
 
     # === Firebase Admin SDK (Optional) ===
@@ -31,9 +32,54 @@ class Settings(BaseSettings):
     # === General App Settings ===
     PROJECT_NAME: str = "Bloodonal Emergency Health Platform"
     API_VERSION: str = "v1"
-    DEBUG: bool = True
+    DEBUG: bool = False
 
-    # Helper: return synchronous DB URL (for Alembic / SQLAlchemy sync)
+    # -----------------------
+    # Validators / helpers
+    # -----------------------
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, v: Optional[str]) -> Optional[str]:
+        """
+        Accept DATABASE_URL in various forms and normalize a bit:
+        - Accepts values wrapped in quotes (strips them)
+        - Convert short forms like 'postgres://' or 'psql://' to 'postgresql://'
+        """
+        if not v:
+            return None
+        if isinstance(v, str):
+            v = v.strip().strip('"').strip("'")
+            # normalize scheme names
+            if v.startswith("postgres://"):
+                v = v.replace("postgres://", "postgresql://", 1)
+            if v.startswith("psql://"):
+                v = v.replace("psql://", "postgresql://", 1)
+            return v
+        return v
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def parse_origins(cls, value: Union[str, List[str]]) -> List[str]:
+        """Support comma-separated origins from an env var."""
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    # -----------------------
+    # Derived properties
+    # -----------------------
+
+    def _ensure_individual_db_vars(self) -> None:
+        """Raise clear error if individual DB vars are incomplete."""
+        missing = [k for k, val in (("DB_USER", self.DB_USER), ("DB_PASS", self.DB_PASS),
+                                     ("DB_HOST", self.DB_HOST), ("DB_NAME", self.DB_NAME)) if not val]
+        if missing:
+            raise RuntimeError(
+                "Database credentials incomplete. Set a full DATABASE_URL or the env vars: "
+                "DB_USER, DB_PASS, DB_HOST, DB_NAME (missing: %s)" % ", ".join(missing)
+            )
+
     @property
     def DATABASE_URL_SYNC(self) -> str:
         """
@@ -44,64 +90,55 @@ class Settings(BaseSettings):
         """
         if self.DATABASE_URL:
             url = self.DATABASE_URL
-            # if driver already present, return as-is
-            if "+" in url.split("://", 1)[0]:
+            # If driver already present (postgresql+...) return as-is
+            scheme_part = url.split("://", 1)[0]
+            if "+" in scheme_part:
                 return url
-            # convert 'postgresql://' or 'psql://' to 'postgresql+psycopg2://'
-            if url.startswith("postgresql://") or url.startswith("psql://") or url.startswith("postgres://"):
+            # Convert plain postgres scheme to psycopg2 driver
+            if url.startswith("postgresql://"):
                 rest = url.split("://", 1)[1]
                 return f"postgresql+psycopg2://{rest}"
+            # If any other form, just return it (best-effort)
             return url
 
-        # fallback to individual env vars
-        if not all([self.DB_USER, self.DB_PASS, self.DB_HOST, self.DB_NAME]):
-            raise RuntimeError("Database credentials incomplete: set DATABASE_URL or DB_USER/DB_PASS/DB_HOST/DB_NAME")
+        # fallback to individual env vars (raise clear error if missing)
+        self._ensure_individual_db_vars()
         return (
             f"postgresql+psycopg2://{self.DB_USER}:{self.DB_PASS}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         )
 
-    # Helper: return async DB URL (for async SQLAlchemy / asyncpg)
     @property
     def ASYNC_DATABASE_URL(self) -> str:
         """
         Return an async DB URL suitable for asyncpg (postgresql+asyncpg://...).
+        Priority same as DATABASE_URL_SYNC.
         """
         if self.DATABASE_URL:
             url = self.DATABASE_URL
-            # if already has driver return converted form or as-is
+            # Already async driver
             if url.startswith("postgresql+asyncpg://"):
                 return url
-            # convert generic postgres url to asyncpg scheme
-            if url.startswith("postgresql://") or url.startswith("psql://") or url.startswith("postgres://"):
+            # Convert generic postgres url to asyncpg scheme
+            if url.startswith("postgresql://"):
                 rest = url.split("://", 1)[1]
                 return f"postgresql+asyncpg://{rest}"
-            # if it contains a + but not asyncpg, replace driver part
-            if "+" in url.split("://", 1)[0]:
-                scheme = url.split("://", 1)[0]
+            # If url contains a + (driver) but not asyncpg, replace driver part
+            scheme_part = url.split("://", 1)[0]
+            if "+" in scheme_part:
+                base = scheme_part.split("+")[0]  # e.g. "postgresql"
                 rest = url.split("://", 1)[1]
-                # swap whatever driver to asyncpg
-                base = scheme.split("+")[0]
                 return f"{base}+asyncpg://{rest}"
+            # Otherwise return url as-is (best-effort)
             return url
 
         # fallback to individual env vars
-        if not all([self.DB_USER, self.DB_PASS, self.DB_HOST, self.DB_NAME]):
-            raise RuntimeError("Database credentials incomplete: set DATABASE_URL or DB_USER/DB_PASS/DB_HOST/DB_NAME")
+        self._ensure_individual_db_vars()
         return (
             f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASS}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         )
 
-    # convert comma-separated string to list for ALLOWED_ORIGINS
-    @field_validator("ALLOWED_ORIGINS", mode="before")
-    @classmethod
-    def parse_origins(cls, value: Union[str, List[str]]) -> List[str]:
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        return value
-
-    # return Path object for Firebase credentials (checks both env names)
     @property
     def GOOGLE_CREDENTIALS_PATH(self) -> Optional[Path]:
         """
@@ -114,10 +151,15 @@ class Settings(BaseSettings):
             return p if p.is_file() else None
         return None
 
+    # -----------------------
+    # Pydantic settings
+    # -----------------------
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="allow",
     )
 
+
+# Instantiate once for the app
 settings = Settings()
