@@ -1,20 +1,17 @@
-# File: app/services/firebase_app.py
-import os
+# File: app/firebase_client.py
 import firebase_admin
 from firebase_admin import credentials, firestore, messaging
-from firebase_admin.exceptions import FirebaseError
+from app.config import settings
 
-# Read the path from the environment variable
-cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
-if not cred_path or not os.path.isfile(cred_path):
-    raise RuntimeError(f"Missing or invalid FIREBASE_CREDENTIALS_PATH: {cred_path!r}")
+cred_path = settings.GOOGLE_CREDENTIALS_PATH  # <- use correct property
 
-# Initialize Firebase app if not already initialized
+if not cred_path or not cred_path.is_file():
+    raise RuntimeError(f"Missing or invalid GOOGLE_APPLICATION_CREDENTIALS: {cred_path!r}")
+
 if not firebase_admin._apps:
-    cred = credentials.Certificate(cred_path)
+    cred = credentials.Certificate(str(cred_path))
     firebase_admin.initialize_app(cred)
 
-# Firestore client
 db = firestore.client()
 
 def send_fcm_to_donor(
@@ -30,7 +27,6 @@ def send_fcm_to_donor(
     )
     try:
         return messaging.send(message)
-    except FirebaseError as e:
-        # Replace with real logging
-        print(f"Failed to send FCM to {fcm_token!r}: {e}")
+    except Exception as e:
+        print(f"Failed to send FCM to {fcm_token}: {e}")
         return None
