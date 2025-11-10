@@ -1,0 +1,20 @@
+[
+  {
+    "purpose": "Going to donate blood at City Hospital",
+    "city": "Limbe",
+    "timestamp": "2025-06-04T10:40:03.847000+00:00",
+    "name": "Michael Mbah",
+    "Capacity": 3,
+    "\"status\"": "open",
+    "location": {
+      "placeName": "Mile 4 Park"
+    },
+    "Region": "South West",
+    "\"assignedDriverUid": null,
+    "vehicleType": "Taxi",
+    "Available": true,
+    "\"assignedDriverName": null,
+    "Duration": " two hours",
+    "id": "6K1iltGYvW9rwA8Q2lOn"
+  }
+]

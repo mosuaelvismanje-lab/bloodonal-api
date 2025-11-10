@@ -1,37 +1,27 @@
 services:
   - type: web
     name: bloodonal-api
-    runtime: python3.12        # specify exact Python version
+    runtime: python3.12
     env: python
     region: frankfurt
     plan: free
 
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    buildCommand: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
 
     envVars:
-      - key: DB_USER
-        value: "neondb_owner"
-      - key: DB_PASS
-        value: "npg_5yc9FbUSihGp"
-      - key: DB_HOST
-        value: "ep-bitter-mouse-a14xm2gk-pooler.ap-southeast-1.aws.neon.tech"
-      - key: DB_NAME
-        value: "neondb"
-      - key: DB_PORT
-        value: "5432"
-
-      - key: PYTHONUNBUFFERED
-        value: "1"
       - key: ENVIRONMENT
         value: "production"
-      - key: FIREBASE_CREDENTIALS_PATH
-        value: "/etc/secrets/firebase.json"
-      - key: SECRET_KEY
-        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: DEBUG
         value: "false"
+      # Do not add SECRET_KEY or DB password here in the file — set them in Render UI
 
+    # Optionally mount the firebase secret file if you prefer that approach:
     secrets:
       - name: firebase.json
         mountPath: /etc/secrets/firebase.json

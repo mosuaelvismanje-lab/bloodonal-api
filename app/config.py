@@ -1,159 +1,135 @@
-# app/config.py
-from typing import List, Optional, Union, Annotated
+from __future__ import annotations
+
 from pathlib import Path
-from urllib.parse import urlparse
+from typing import List, Optional, Union, Annotated
+from urllib.parse import quote_plus
+from tempfile import NamedTemporaryFile
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
 
 
 class Settings(BaseSettings):
-    # === PostgreSQL DB Credentials (individual vars) ===
+    """
+    Application settings loaded from environment (or .env).
+    - Supports DATABASE_URL (full) OR DB_USER/DB_PASS/DB_HOST/DB_NAME
+    - Exposes sync and async SQLAlchemy URLs
+    - Exposes GOOGLE_CREDENTIALS_PATH (prefers FIREBASE_CREDENTIALS_PATH or JSON secret)
+    """
+
+    # General / runtime
+    ENVIRONMENT: str = "development"
+    DEBUG: bool = False
+    SECRET_KEY: str = "please-change-me"
+    PYTHONUNBUFFERED: int = 1
+
+    # App meta
+    PROJECT_NAME: str = "Bloodonal Emergency Health Platform"
+    API_VERSION: str = "v1"
+
+    # === Database ===
+    DATABASE_URL: Optional[str] = None
     DB_USER: Optional[str] = None
     DB_PASS: Optional[str] = None
     DB_HOST: Optional[str] = None
     DB_PORT: int = 5432
     DB_NAME: Optional[str] = None
 
-    # Optional single connection string (psql://... or postgresql://... or postgres://...)
-    DATABASE_URL: Optional[str] = None
-
-    # === Firebase Admin SDK (Optional) ===
-    # Render will supply FIREBASE_CREDENTIALS_PATH as a mounted secret path
+    # === Firebase / Google credentials ===
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None
-    GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None  # legacy name fallback
+    FIREBASE_CREDENTIALS_JSON: Optional[str] = None  # store JSON content in env
+    GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None  # legacy fallback
 
-    # === CORS (List of Allowed Origins) ===
+    # === CORS ===
     ALLOWED_ORIGINS: Annotated[List[str], NoDecode] = []
 
-    # === Optional API Keys ===
+    # Optional external API keys
     WHO_API_KEY: Optional[str] = None
     CDC_API_KEY: Optional[str] = None
 
-    # === General App Settings ===
-    PROJECT_NAME: str = "Bloodonal Emergency Health Platform"
-    API_VERSION: str = "v1"
-    DEBUG: bool = False
-
-    # -----------------------
-    # Validators / helpers
-    # -----------------------
-
-    @field_validator("DATABASE_URL", mode="before")
-    @classmethod
-    def _normalize_database_url(cls, v: Optional[str]) -> Optional[str]:
-        """
-        Accept DATABASE_URL in various forms and normalize a bit:
-        - Accepts values wrapped in quotes (strips them)
-        - Convert short forms like 'postgres://' or 'psql://' to 'postgresql://'
-        """
-        if not v:
-            return None
-        if isinstance(v, str):
-            v = v.strip().strip('"').strip("'")
-            # normalize scheme names
-            if v.startswith("postgres://"):
-                v = v.replace("postgres://", "postgresql://", 1)
-            if v.startswith("psql://"):
-                v = v.replace("psql://", "postgresql://", 1)
-            return v
-        return v
-
-    @field_validator("ALLOWED_ORIGINS", mode="before")
-    @classmethod
-    def parse_origins(cls, value: Union[str, List[str]]) -> List[str]:
-        """Support comma-separated origins from an env var."""
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        return value
-
-    # -----------------------
-    # Derived properties
-    # -----------------------
-
-    def _ensure_individual_db_vars(self) -> None:
-        """Raise clear error if individual DB vars are incomplete."""
-        missing = [k for k, val in (("DB_USER", self.DB_USER), ("DB_PASS", self.DB_PASS),
-                                     ("DB_HOST", self.DB_HOST), ("DB_NAME", self.DB_NAME)) if not val]
-        if missing:
-            raise RuntimeError(
-                "Database credentials incomplete. Set a full DATABASE_URL or the env vars: "
-                "DB_USER, DB_PASS, DB_HOST, DB_NAME (missing: %s)" % ", ".join(missing)
-            )
+    # -------------------------
+    # Helper properties
+    # -------------------------
+    @property
+    def _effective_db_url(self) -> Optional[str]:
+        if self.DATABASE_URL and self.DATABASE_URL.strip():
+            return self.DATABASE_URL.strip()
+        return None
 
     @property
-    def DATABASE_URL_SYNC(self) -> str:
-        """
-        Return a sync DB URL suitable for psycopg2 (postgresql+psycopg2://...).
-        Priority:
-          1. If DATABASE_URL provided, convert to psycopg2 form if needed.
-          2. Else build from DB_USER/DB_PASS/DB_HOST/DB_PORT/DB_NAME.
-        """
-        if self.DATABASE_URL:
-            url = self.DATABASE_URL
-            # If driver already present (postgresql+...) return as-is
-            scheme_part = url.split("://", 1)[0]
-            if "+" in scheme_part:
+    def SYNC_DATABASE_URL(self) -> str:
+        url = self._effective_db_url
+        if url:
+            if url.startswith("postgresql+"):
                 return url
-            # Convert plain postgres scheme to psycopg2 driver
-            if url.startswith("postgresql://"):
+            if url.startswith(("postgresql://", "postgres://", "psql://")):
                 rest = url.split("://", 1)[1]
                 return f"postgresql+psycopg2://{rest}"
-            # If any other form, just return it (best-effort)
             return url
 
-        # fallback to individual env vars (raise clear error if missing)
-        self._ensure_individual_db_vars()
-        return (
-            f"postgresql+psycopg2://{self.DB_USER}:{self.DB_PASS}"
-            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
-        )
+        if not all([self.DB_USER, self.DB_PASS, self.DB_HOST, self.DB_NAME]):
+            raise RuntimeError(
+                "Database credentials incomplete: set DATABASE_URL or DB_USER/DB_PASS/DB_HOST/DB_NAME"
+            )
+        user = quote_plus(self.DB_USER)
+        password = quote_plus(self.DB_PASS)
+        host = self.DB_HOST
+        port = self.DB_PORT or 5432
+        name = self.DB_NAME
+        return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{name}"
 
     @property
     def ASYNC_DATABASE_URL(self) -> str:
-        """
-        Return an async DB URL suitable for asyncpg (postgresql+asyncpg://...).
-        Priority same as DATABASE_URL_SYNC.
-        """
-        if self.DATABASE_URL:
-            url = self.DATABASE_URL
-            # Already async driver
+        url = self._effective_db_url
+        if url:
             if url.startswith("postgresql+asyncpg://"):
                 return url
-            # Convert generic postgres url to asyncpg scheme
-            if url.startswith("postgresql://"):
+            if url.startswith(("postgresql://", "postgres://", "psql://")):
                 rest = url.split("://", 1)[1]
                 return f"postgresql+asyncpg://{rest}"
-            # If url contains a + (driver) but not asyncpg, replace driver part
-            scheme_part = url.split("://", 1)[0]
-            if "+" in scheme_part:
-                base = scheme_part.split("+")[0]  # e.g. "postgresql"
+            if "+" in url.split("://", 1)[0]:
+                scheme = url.split("://", 1)[0]
                 rest = url.split("://", 1)[1]
+                base = scheme.split("+")[0]
                 return f"{base}+asyncpg://{rest}"
-            # Otherwise return url as-is (best-effort)
             return url
 
-        # fallback to individual env vars
-        self._ensure_individual_db_vars()
-        return (
-            f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASS}"
-            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
-        )
+        if not all([self.DB_USER, self.DB_PASS, self.DB_HOST, self.DB_NAME]):
+            raise RuntimeError(
+                "Database credentials incomplete: set DATABASE_URL or DB_USER/DB_PASS/DB_HOST/DB_NAME"
+            )
+        user = quote_plus(self.DB_USER)
+        password = quote_plus(self.DB_PASS)
+        host = self.DB_HOST
+        port = self.DB_PORT or 5432
+        name = self.DB_NAME
+        return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
 
     @property
     def GOOGLE_CREDENTIALS_PATH(self) -> Optional[Path]:
         """
-        Prefer FIREBASE_CREDENTIALS_PATH, fall back to GOOGLE_APPLICATION_CREDENTIALS.
-        Returns a Path only if the file exists, otherwise None.
+        Prefer JSON secret (FIREBASE_CREDENTIALS_JSON) or path env variables.
+        Returns a Path to a temporary file if JSON content is provided.
         """
-        path_str = self.FIREBASE_CREDENTIALS_PATH or self.GOOGLE_APPLICATION_CREDENTIALS
-        if path_str:
-            p = Path(path_str)
-            return p if p.is_file() else None
-        return None
+        if self.FIREBASE_CREDENTIALS_JSON:
+            tmp_file = NamedTemporaryFile(delete=False, suffix=".json")
+            tmp_file.write(self.FIREBASE_CREDENTIALS_JSON.encode("utf-8"))
+            tmp_file.close()
+            return Path(tmp_file.name)
 
-    # -----------------------
-    # Pydantic settings
-    # -----------------------
+        path_str = self.FIREBASE_CREDENTIALS_PATH or self.GOOGLE_APPLICATION_CREDENTIALS
+        if not path_str:
+            return None
+        p = Path(path_str)
+        return p if p.is_file() else None
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def _parse_origins(cls, value: Union[str, List[str]]) -> List[str]:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -161,5 +137,5 @@ class Settings(BaseSettings):
     )
 
 
-# Instantiate once for the app
+# single settings instance to import everywhere
 settings = Settings()
