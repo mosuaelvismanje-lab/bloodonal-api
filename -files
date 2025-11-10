@@ -1,0 +1,268 @@
+[33mcommit 0327459230b5a7cce15e00a5ac8ea5349b40d00f[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m
+Author: Elvis manje Mosua <mosuaelvismanje@gmail.com>
+Date:   Wed Nov 5 18:40:29 2025 +0100
+
+    Add .gitignore to ignore sensitive and unnecessary files
+
+ .gitignore | Bin [31m850[m -> [32m780[m bytes
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+
+[33mcommit 259a383229ba200a0d5ef507f7cb3721eab2452d[m
+Author: Elvis manje Mosua <mosuaelvismanje@gmail.com>
+Date:   Wed Nov 5 10:58:57 2025 +0100
+
+    Ignore service account key
+
+ .gitignore | Bin [31m802[m -> [32m850[m bytes
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+
+[33mcommit 01fcce871796fc6f887a4a7fadf555ff11197cd1[m
+Author: Elvis manje Mosua <mosuaelvismanje@gmail.com>
+Date:   Wed Nov 5 10:47:42 2025 +0100
+
+    Ignore service account key
+
+ .gitignore | Bin [31m754[m -> [32m802[m bytes
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+
+[33mcommit aac096740d5d65996bd63864e299cdb52bcfddff[m
+Author: Elvis manje Mosua <mosuaelvismanje@gmail.com>
+Date:   Wed Nov 5 10:36:50 2025 +0100
+
+    Add .gitignore and remove Firebase key from tracking
+
+ .gitignore | Bin [31m16[m -> [32m754[m bytes
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+
+[33mcommit 36d7dcc09493037ff4d8dd32e82985d558580c42[m
+Author: Elvis manje Mosua <mosuaelvismanje@gmail.com>
+Date:   Wed Nov 5 10:07:53 2025 +0100
+
+    Remove venv folder and ignore it
+
+ .gitignore | Bin [31m0[m -> [32m16[m bytes
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+
+[33mcommit 11f28d52069949b6c2bd8999ed7b1e35123138a9[m
+Author: Elvis manje Mosua <mosuaelvismanje@gmail.com>
+Date:   Wed Nov 5 09:27:20 2025 +0100
+
+    Initial FastAPI backend for Bloodonal
+
+ .idea/.gitignore                                   |   3 [32m+[m
+ .idea/bloodonal.iml                                |  10 [32m++[m
+ .idea/inspectionProfiles/profiles_settings.xml     |   6 [32m+[m
+ .idea/misc.xml                                     |   7 [32m+[m
+ .idea/modules.xml                                  |   8 [32m+[m
+ .idea/vcs.xml                                      |   6 [32m+[m
+ README.md                                          |  18 [32m+++[m
+ __pycache__/main.cpython-312.pyc                   | Bin [31m0[m -> [32m4291[m bytes
+ alembic.ini                                        | 143 [32m+++++++++++++++++[m
+ alembic/README                                     |   1 [32m+[m
+ alembic/__pycache__/env.cpython-312.pyc            | Bin [31m0[m -> [32m3728[m bytes
+ alembic/env.py                                     |  84 [32m++++++++++[m
+ alembic/script.py.mako                             |  28 [32m++++[m
+ .../1773aede24e8_add_hospital_to_blood_donors.py   | 167 [32m++++++++++++++++++++[m
+ .../39eca1b98c6c_add_urgent_to_blood_requests.py   |  32 [32m++++[m
+ ...a8d0e640054_expand_city_and_hospital_columns.py |  44 [32m++++++[m
+ .../versions/42cf57dd7921_add_city_to_outbreaks.py |  32 [32m++++[m
+ .../4e9fc9e07bc5_add_updated_at_to_blood_donors.py |  32 [32m++++[m
+ ...9c708d8_add_service_type_enum_to_healthcare_.py |  41 [32m+++++[m
+ .../5cac4be2f931_add_city_to_blood_requests.py     | 170 [32m++++++++++++++++++++[m
+ .../712e07e48af8_add_city_to_blood_donors.py       |  32 [32m++++[m
+ .../80809673eadb_add_city_to_blood_requests.py     | 172 [32m+++++++++++++++++++++[m
+ alembic/versions/82c133374cb1_add_chat.py          |  32 [32m++++[m
+ ...e8_add_hospital_to_blood_donors.cpython-312.pyc | Bin [31m0[m -> [32m16754[m bytes
+ ...6c_add_urgent_to_blood_requests.cpython-312.pyc | Bin [31m0[m -> [32m1018[m bytes
+ ...xpand_city_and_hospital_columns.cpython-312.pyc | Bin [31m0[m -> [32m1960[m bytes
+ ...f57dd7921_add_city_to_outbreaks.cpython-312.pyc | Bin [31m0[m -> [32m1004[m bytes
+ ..._add_updated_at_to_blood_donors.cpython-312.pyc | Bin [31m0[m -> [32m1022[m bytes
+ ...ervice_type_enum_to_healthcare_.cpython-312.pyc | Bin [31m0[m -> [32m1811[m bytes
+ ...f931_add_city_to_blood_requests.cpython-312.pyc | Bin [31m0[m -> [32m17191[m bytes
+ ...e48af8_add_city_to_blood_donors.cpython-312.pyc | Bin [31m0[m -> [32m1010[m bytes
+ ...eadb_add_city_to_blood_requests.cpython-312.pyc | Bin [31m0[m -> [32m17407[m bytes
+ .../82c133374cb1_add_chat.cpython-312.pyc          | Bin [31m0[m -> [32m978[m bytes
+ ...dd_city_to_healthcare_providers.cpython-312.pyc | Bin [31m0[m -> [32m1045[m bytes
+ ...c_fix_city_and_hospital_lengths.cpython-312.pyc | Bin [31m0[m -> [32m1546[m bytes
+ ..._needed_units_to_blood_requests.cpython-312.pyc | Bin [31m0[m -> [32m3626[m bytes
+ ...add_city_to_healthcare_requests.cpython-312.pyc | Bin [31m0[m -> [32m1024[m bytes
+ ...b0e4e80adc4_add_city_to_healthcare_providers.py |  25 [32m+++[m
+ .../d5491939629c_fix_city_and_hospital_lengths.py  |  38 [32m+++++[m
+ ...6c69f1375_add_needed_units_to_blood_requests.py |  54 [32m+++++++[m
+ ...f3faf5597c4b_add_city_to_healthcare_requests.py |  32 [32m++++[m
+ app/__init__.py                                    |   0
+ app/__pycache__/__init__.cpython-312.pyc           | Bin [31m0[m -> [32m133[m bytes
+ app/__pycache__/config.cpython-312.pyc             | Bin [31m0[m -> [32m3176[m bytes
+ app/__pycache__/database.cpython-312.pyc           | Bin [31m0[m -> [32m2035[m bytes
+ app/__pycache__/dependencies.cpython-312.pyc       | Bin [31m0[m -> [32m739[m bytes
+ app/__pycache__/firebase_client.cpython-312.pyc    | Bin [31m0[m -> [32m1658[m bytes
+ app/adapters/__init__.py                           |   3 [32m+[m
+ app/adapters/__pycache__/__init__.cpython-312.pyc  | Bin [31m0[m -> [32m257[m bytes
+ .../__pycache__/chat_gateway.cpython-312.pyc       | Bin [31m0[m -> [32m828[m bytes
+ .../__pycache__/mtn_gateway.cpython-312.pyc        | Bin [31m0[m -> [32m772[m bytes
+ .../__pycache__/orange_gateway.cpython-312.pyc     | Bin [31m0[m -> [32m796[m bytes
+ app/adapters/chat_gateway.py                       |   9 [32m++[m
+ app/adapters/mtn_gateway.py                        |  12 [32m++[m
+ app/adapters/orange_gateway.py                     |   8 [32m+[m
+ app/api/__init__.py                                |   0
+ app/api/__pycache__/__init__.cpython-312.pyc       | Bin [31m0[m -> [32m137[m bytes
+ app/api/__pycache__/dependencies.cpython-312.pyc   | Bin [31m0[m -> [32m2493[m bytes
+ app/api/dependencies.py                            |  59 [32m+++++++[m
+ app/api/routers/__init__.py                        |   0
+ .../routers/__pycache__/__init__.cpython-312.pyc   | Bin [31m0[m -> [32m145[m bytes
+ .../routers/__pycache__/payments.cpython-312.pyc   | Bin [31m0[m -> [32m3592[m bytes
+ app/api/routers/payments.py                        |  95 [32m++++++++++++[m
+ app/config.py                                      |  68 [32m++++++++[m
+ app/crud/__init__.py                               |   0
+ app/crud/__pycache__/__init__.cpython-312.pyc      | Bin [31m0[m -> [32m138[m bytes
+ app/crud/__pycache__/blood_request.cpython-312.pyc | Bin [31m0[m -> [32m1532[m bytes
+ app/crud/__pycache__/chat.cpython-312.pyc          | Bin [31m0[m -> [32m2020[m bytes
+ .../healthcare_provider.cpython-312.pyc            | Bin [31m0[m -> [32m4021[m bytes
+ .../__pycache__/healthcare_request.cpython-312.pyc | Bin [31m0[m -> [32m2074[m bytes
+ .../__pycache__/transport_offer.cpython-312.pyc    | Bin [31m0[m -> [32m1141[m bytes
+ .../__pycache__/transport_request.cpython-312.pyc  | Bin [31m0[m -> [32m1152[m bytes
+ app/crud/blood_donor.py                            |  75 [32m+++++++++[m
+ app/crud/blood_request.py                          |  25 [32m+++[m
+ app/crud/chat.py                                   |  27 [32m++++[m
+ app/crud/healthcare_provider.py                    |  64 [32m++++++++[m
+ app/crud/healthcare_request.py                     |  33 [32m++++[m
+ app/crud/transport_offer.py                        |  14 [32m++[m
+ app/crud/transport_request.py                      |  14 [32m++[m
+ app/data/__init__.py                               |   0
+ app/data/__pycache__/__init__.cpython-312.pyc      | Bin [31m0[m -> [32m138[m bytes
+ app/data/__pycache__/models.cpython-312.pyc        | Bin [31m0[m -> [32m1004[m bytes
+ app/data/__pycache__/repositories.cpython-312.pyc  | Bin [31m0[m -> [32m2946[m bytes
+ app/data/models.py                                 |  14 [32m++[m
+ app/data/repositories.py                           |  43 [32m++++++[m
+ app/database.py                                    |  42 [32m+++++[m
+ app/dependencies.py                                |  11 [32m++[m
+ app/domain/__init__.py                             |   0
+ app/domain/__pycache__/__init__.cpython-312.pyc    | Bin [31m0[m -> [32m140[m bytes
+ .../consultation_models.cpython-312.pyc            | Bin [31m0[m -> [32m1280[m bytes
+ app/domain/__pycache__/gateways.cpython-312.pyc    | Bin [31m0[m -> [32m697[m bytes
+ app/domain/__pycache__/interfaces.cpython-312.pyc  | Bin [31m0[m -> [32m2663[m bytes
+ app/domain/__pycache__/usecases.cpython-312.pyc    | Bin [31m0[m -> [32m5593[m bytes
+ app/domain/consultation_models.py                  |  26 [32m++++[m
+ app/domain/gateways.py                             |   7 [32m+[m
+ app/domain/interfaces.py                           |  40 [32m+++++[m
+ app/domain/usecases.py                             | 125 [32m+++++++++++++++[m
+ app/firebase_client.py                             |  34 [32m++++[m
+ app/infrastructure/__init__.py                     |   0
+ .../__pycache__/__init__.cpython-312.pyc           | Bin [31m0[m -> [32m148[m bytes
+ .../__pycache__/jitsi.cpython-312.pyc              | Bin [31m0[m -> [32m874[m bytes
+ .../__pycache__/repositories.cpython-312.pyc       | Bin [31m0[m -> [32m2168[m bytes
+ app/infrastructure/jitsi.py                        |   7 [32m+[m
+ app/infrastructure/repositories.py                 |  34 [32m++++[m
+ app/models/__init__.py                             |  10 [32m++[m
+ app/models/__pycache__/__init__.cpython-312.pyc    | Bin [31m0[m -> [32m554[m bytes
+ app/models/__pycache__/blood_donor.cpython-312.pyc | Bin [31m0[m -> [32m1859[m bytes
+ .../__pycache__/blood_request.cpython-312.pyc      | Bin [31m0[m -> [32m1221[m bytes
+ app/models/__pycache__/chat.cpython-312.pyc        | Bin [31m0[m -> [32m1582[m bytes
+ app/models/__pycache__/doctor.cpython-312.pyc      | Bin [31m0[m -> [32m998[m bytes
+ .../healthcare_provider.cpython-312.pyc            | Bin [31m0[m -> [32m1466[m bytes
+ .../__pycache__/healthcare_request.cpython-312.pyc | Bin [31m0[m -> [32m1803[m bytes
+ .../__pycache__/notification.cpython-312.pyc       | Bin [31m0[m -> [32m1147[m bytes
+ app/models/__pycache__/token.cpython-312.pyc       | Bin [31m0[m -> [32m584[m bytes
+ .../__pycache__/transport_offer.cpython-312.pyc    | Bin [31m0[m -> [32m1063[m bytes
+ .../__pycache__/transport_request.cpython-312.pyc  | Bin [31m0[m -> [32m1124[m bytes
+ app/models/__pycache__/user.cpython-312.pyc        | Bin [31m0[m -> [32m792[m bytes
+ app/models/blood_donor.py                          |  38 [32m+++++[m
+ app/models/blood_request.py                        |  17 [32m++[m
+ app/models/chat.py                                 |  29 [32m++++[m
+ app/models/doctor.py                               |  15 [32m++[m
+ app/models/healthcare_provider.py                  |  24 [32m+++[m
+ app/models/healthcare_request.py                   |  31 [32m++++[m
+ app/models/notification.py                         |  18 [32m+++[m
+ app/models/token.py                                |  11 [32m++[m
+ app/models/transport_offer.py                      |  14 [32m++[m
+ app/models/transport_request.py                    |  15 [32m++[m
+ app/models/user.py                                 |  14 [32m++[m
+ app/repositories/__init__.py                       |   0
+ .../__pycache__/__init__.cpython-312.pyc           | Bin [31m0[m -> [32m146[m bytes
+ .../notification_repository.cpython-312.pyc        | Bin [31m0[m -> [32m1808[m bytes
+ .../__pycache__/token_repository.cpython-312.pyc   | Bin [31m0[m -> [32m3380[m bytes
+ .../__pycache__/user_repository.cpython-312.pyc    | Bin [31m0[m -> [32m1222[m bytes
+ app/repositories/notification_repository.py        |  20 [32m+++[m
+ app/repositories/token_repository.py               |  58 [32m+++++++[m
+ app/repositories/user_repository.py                |  12 [32m++[m
+ app/routers/__init__.py                            |   0
+ app/routers/__pycache__/__init__.cpython-312.pyc   | Bin [31m0[m -> [32m141[m bytes
+ .../__pycache__/blood_donor.cpython-312.pyc        | Bin [31m0[m -> [32m5940[m bytes
+ .../__pycache__/blood_request.cpython-312.pyc      | Bin [31m0[m -> [32m3423[m bytes
+ app/routers/__pycache__/chat.cpython-312.pyc       | Bin [31m0[m -> [32m3762[m bytes
+ .../__pycache__/consultation.cpython-312.pyc       | Bin [31m0[m -> [32m3999[m bytes
+ .../__pycache__/health_provider.cpython-312.pyc    | Bin [31m0[m -> [32m5156[m bytes
+ .../__pycache__/health_request.cpython-312.pyc     | Bin [31m0[m -> [32m5250[m bytes
+ .../__pycache__/notifications.cpython-312.pyc      | Bin [31m0[m -> [32m6817[m bytes
+ .../__pycache__/transport_offer.cpython-312.pyc    | Bin [31m0[m -> [32m1822[m bytes
+ .../__pycache__/transport_request.cpython-312.pyc  | Bin [31m0[m -> [32m1758[m bytes
+ app/routers/blood_donor.py                         |  80 [32m++++++++++[m
+ app/routers/blood_request.py                       |  57 [32m+++++++[m
+ app/routers/blood_request_payments.py              |  21 [32m+++[m
+ app/routers/chat.py                                |  51 [32m++++++[m
+ app/routers/consultation.py                        |  92 [32m+++++++++++[m
+ app/routers/doctor_payments.py                     |  73 [32m+++++++++[m
+ app/routers/doctors.py                             | 101 [32m++++++++++++[m
+ app/routers/health_provider.py                     |  90 [32m+++++++++++[m
+ app/routers/health_request.py                      |  97 [32m++++++++++++[m
+ app/routers/notifications.py                       | 147 [32m++++++++++++++++++[m
+ app/routers/nurse_payments.py                      |  62 [32m++++++++[m
+ app/routers/transport_offer.py                     |  33 [32m++++[m
+ app/routers/transport_payments.py                  |  50 [32m++++++[m
+ app/routers/transport_request.py                   |  26 [32m++++[m
+ app/schemas/__init__.py                            |   0
+ app/schemas/__pycache__/__init__.cpython-312.pyc   | Bin [31m0[m -> [32m141[m bytes
+ .../__pycache__/blood_donors.cpython-312.pyc       | Bin [31m0[m -> [32m3945[m bytes
+ .../__pycache__/blood_requests.cpython-312.pyc     | Bin [31m0[m -> [32m1400[m bytes
+ app/schemas/__pycache__/chat.cpython-312.pyc       | Bin [31m0[m -> [32m1744[m bytes
+ .../healthcare_providers.cpython-312.pyc           | Bin [31m0[m -> [32m2042[m bytes
+ .../healthcare_requests.cpython-312.pyc            | Bin [31m0[m -> [32m2038[m bytes
+ .../__pycache__/notification.cpython-312.pyc       | Bin [31m0[m -> [32m1040[m bytes
+ .../__pycache__/transport_offered.cpython-312.pyc  | Bin [31m0[m -> [32m1300[m bytes
+ .../__pycache__/transport_request.cpython-312.pyc  | Bin [31m0[m -> [32m1318[m bytes
+ app/schemas/blood_donors.py                        |  76 [32m+++++++++[m
+ app/schemas/blood_requests.py                      |  24 [32m+++[m
+ app/schemas/chat.py                                |  34 [32m++++[m
+ app/schemas/doctor_payment.py                      |  10 [32m++[m
+ app/schemas/doctordto.py                           |  14 [32m++[m
+ app/schemas/healthcare_providers.py                |  44 [32m++++++[m
+ app/schemas/healthcare_requests.py                 |  34 [32m++++[m
+ app/schemas/notification.py                        |  22 [32m+++[m
+ app/schemas/nurse_payment.py                       |  10 [32m++[m
+ app/schemas/payment.py                             |  13 [32m++[m
+ app/schemas/transport_offered.py                   |  21 [32m+++[m
+ app/schemas/transport_request.py                   |  24 [32m+++[m
+ app/services/__init__.py                           |   0
+ app/services/__pycache__/__init__.cpython-312.pyc  | Bin [31m0[m -> [32m142[m bytes
+ .../notification_service.cpython-312.pyc           | Bin [31m0[m -> [32m976[m bytes
+ .../public_health_service.cpython-312.pyc          | Bin [31m0[m -> [32m2063[m bytes
+ app/services/consultation_service.py               |  57 [32m+++++++[m
+ app/services/doctor_service.py                     |  12 [32m++[m
+ app/services/fcm.py                                |  17 [32m++[m
+ app/services/notification_service.py               |  20 [32m+++[m
+ app/services/public_health_service.py              |  30 [32m++++[m
+ create_tables.py                                   |  18 [32m+++[m
+ deployment/cloud_run/cloudbuild.yaml               |  19 [32m+++[m
+ deployment/docker/Dockerfile                       |  24 [32m+++[m
+ deployment/k8s/deployment.yaml                     |  26 [32m++++[m
+ deployment/k8s/service.yaml                        |  12 [32m++[m
+ export_firestore_to_json.py                        |  61 [32m++++++++[m
+ firestore_exports/bike.json                        |  15 [32m++[m
+ firestore_exports/blood_donate.json                |  16 [32m++[m
+ firestore_exports/blood_requests.json              | 114 [32m++++++++++++++[m
+ firestore_exports/doctors.json                     |  15 [32m++[m
+ firestore_exports/donors.json                      |  24 [32m+++[m
+ firestore_exports/healthcare_offers.json           |  51 [32m++++++[m
+ firestore_exports/healthcare_requests.json         |  13 [32m++[m
+ firestore_exports/notifications.json               |  12 [32m++[m
+ firestore_exports/nurses.json                      |  11 [32m++[m
+ firestore_exports/taxi.json                        |  15 [32m++[m
+ firestore_exports/transport_offers.json            |  29 [32m++++[m
+ firestore_exports/transport_requests.json          |  20 [32m+++[m
+ firestore_exports/users.json                       |  25 [32m+++[m
+ import_neon_data.py                                | 140 [32m+++++++++++++++++[m
+ inspect_json.py                                    |  24 [32m+++[m
+ main.py                                            | 102 [32m++++++++++++[m
+ render.yaml                                        |  24 [32m+++[m
+ requirements.txt                                   |  12 [32m++[m
+ 216 files changed, 4696 insertions(+)
