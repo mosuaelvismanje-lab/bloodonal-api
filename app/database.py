@@ -11,8 +11,17 @@ logger = logging.getLogger("uvicorn.error")
 
 # === Database Engine ===
 try:
+    # --- TEMPORARY DEBUG CODE (Check the URL value) ---
+    url_to_use = settings.ASYNC_DATABASE_URL
+    print("\n--- DB URL DEBUG START ---")
+    print(f"URL Starts With: '{url_to_use.strip()[:30]}'")
+    print(f"URL Length: {len(url_to_use.strip())}")
+    print("--- DB URL DEBUG END ---\n")
+    # --------------------------------------------------
+
     engine = create_async_engine(
-        settings.ASYNC_DATABASE_URL,  # will raise RuntimeError if env vars missing
+        # FIX: Use .strip() to clean the URL string from hidden whitespace/newlines
+        url_to_use.strip(),
         echo=settings.DEBUG,
         pool_pre_ping=True,
         future=True,
@@ -22,6 +31,8 @@ try:
 except Exception as exc:
     logger.exception("Failed to initialize async SQLAlchemy engine: %s", exc)
     raise
+
+# ---
 
 # === Session Factory ===
 AsyncSessionLocal = async_sessionmaker(
@@ -33,6 +44,8 @@ AsyncSessionLocal = async_sessionmaker(
 # === Base Class for Models ===
 Base = declarative_base()
 
+# ---
+
 # === Dependency for FastAPI Routes ===
 async def get_async_session() -> AsyncIterator[AsyncSession]:
     async with AsyncSessionLocal() as session:
@@ -43,6 +56,8 @@ async def get_async_session() -> AsyncIterator[AsyncSession]:
             raise
         finally:
             await session.close()
+
+# ---
 
 # === DB Initialization (Development Only) ===
 async def init_db() -> None:
