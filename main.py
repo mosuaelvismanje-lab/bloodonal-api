@@ -7,7 +7,7 @@ from firebase_admin import credentials
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import settings
+from config import settings
 from app.database import engine, Base
 
 

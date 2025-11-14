@@ -16,9 +16,8 @@ from alembic import context
 # 2️ Allow imports from your application
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.config import settings     # now has real ASYNC_DATABASE_URL
+from config import settings     # now has real ASYNC_DATABASE_URL
 from app.database import Base
-import app.models                    # Registers all your models on Base.metadata
 
 # ——— Alembic configuration —————————————————————————————————————————————————
 

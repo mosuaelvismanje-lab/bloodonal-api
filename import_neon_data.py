@@ -1,7 +1,7 @@
 import json
 import psycopg2
 from datetime import datetime, timezone
-from app.config import settings  # import your Pydantic settings
+from config import settings  # import your Pydantic settings
 
 
 def get_conn():

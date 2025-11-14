@@ -15,9 +15,8 @@ from app.crud.healthcare_request import (
 )
 from app.crud.healthcare_provider import get_provider_by_id
 from app.database import get_async_session
-from app.config import settings
+from config import settings
 from app.schemas.healthcare_requests import HealthcareRequest, HealthcareRequestCreate
-from app.models.healthcare_provider import ProviderType
 
 logger = logging.getLogger(__name__)
 

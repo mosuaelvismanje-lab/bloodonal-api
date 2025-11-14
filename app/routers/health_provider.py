@@ -17,7 +17,7 @@ from app.crud.healthcare_provider import (
     delete_provider
 )
 from app.database import get_async_session
-from app.config import settings
+from config import settings
 from app.models.healthcare_provider import ProviderType
 
 logger = logging.getLogger(__name__)
