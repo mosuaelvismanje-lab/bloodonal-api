@@ -1,4 +1,3 @@
-# app/database.py
 from typing import AsyncIterator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
@@ -6,36 +5,37 @@ from sqlalchemy.exc import SQLAlchemyError
 import logging
 import os
 
-from config import settings
+from app.config import settings
 
 logger = logging.getLogger("uvicorn.error")
 
-# === Database Engine ===
+# =========================
+# Database Engine
+# =========================
 try:
-    # Choose correct DB URL: async if available, otherwise fallback to sync
-    url_to_use = getattr(settings, "ASYNC_DATABASE_URL", None) or os.getenv("ASYNC_DATABASE_URL")
+    # Prefer async DB URL from settings
+    url_to_use: str | None = settings.ASYNC_DATABASE_URL or os.getenv("ASYNC_DATABASE_URL")
 
-    # Fallback for local environment (Render only uses ASYNC)
+    # Fallback to sync URL and convert to async
     if not url_to_use:
-        url_to_use = getattr(settings, "DATABASE_URL", None) or os.getenv("DATABASE_URL")
-
-        # convert sync URL to async automatically if needed
+        url_to_use = settings.DATABASE_URL or os.getenv("DATABASE_URL")
         if url_to_use and url_to_use.startswith("postgresql://"):
             url_to_use = url_to_use.replace("postgresql://", "postgresql+asyncpg://", 1)
 
     if not url_to_use:
-        raise RuntimeError("No ASYNC_DATABASE_URL or DATABASE_URL found in environment variables")
+        raise RuntimeError("No ASYNC_DATABASE_URL or DATABASE_URL found in environment")
 
     # --- Debugging Info ---
-    print("\n--- DB URL DEBUG START ---")
-    print(f"URL Starts With: '{url_to_use.strip()[:40]}'")
-    print(f"URL Length: {len(url_to_use.strip())}")
-    print("--- DB URL DEBUG END ---\n")
+    if settings.DEBUG:
+        print("\n--- DB URL DEBUG START ---")
+        print(f"URL Starts With: '{url_to_use.strip()[:40]}'")
+        print(f"URL Length: {len(url_to_use.strip())}")
+        print("--- DB URL DEBUG END ---\n")
 
-    # Create the async engine
+    # Create async engine
     engine = create_async_engine(
         url_to_use.strip(),
-        echo=getattr(settings, "DEBUG", False),
+        echo=settings.DEBUG,
         pool_pre_ping=True,
         future=True,
     )
@@ -45,20 +45,23 @@ except Exception as exc:
     logger.exception("❌ Failed to initialize async SQLAlchemy engine: %s", exc)
     raise
 
-
-# === Session Factory ===
+# =========================
+# Session Factory
+# =========================
 AsyncSessionLocal = async_sessionmaker(
-    engine,
+    bind=engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
 
-
-# === Base Class for Models ===
+# =========================
+# Base Model
+# =========================
 Base = declarative_base()
 
-
-# === Dependency for FastAPI Routes ===
+# =========================
+# FastAPI Dependency
+# =========================
 async def get_async_session() -> AsyncIterator[AsyncSession]:
     async with AsyncSessionLocal() as session:
         try:
@@ -70,12 +73,14 @@ async def get_async_session() -> AsyncIterator[AsyncSession]:
             await session.close()
 
 
-# === DB Initialization (Development Only) ===
+# =========================
+# Development DB Init
+# =========================
 async def init_db() -> None:
     """
-    ⚠️ Development only. In production, use Alembic migrations.
+    ⚠️ Development only: creates tables. In production, use Alembic migrations.
     """
-    import app.models  # noqa: F401 ensures models are imported
+    import app.models  # noqa: F401 ensures models are loaded
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)

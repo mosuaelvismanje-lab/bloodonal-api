@@ -1,8 +1,8 @@
-# app/routers/notifications.py
+# File: app/routers/notifications.py
 import asyncio
 import inspect
 import logging
-from typing import List, Any
+from typing import List, Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,8 +33,6 @@ async def get_notification_service(
 ) -> NotificationService:
     """
     Build and return a NotificationService wired with NotificationRepository.
-    The repository/service should ideally accept AsyncSession and implement async methods,
-    but this router supports sync implementations as well (they will be run in a thread).
     """
     repo = NotificationRepository(session)
     svc = NotificationService(repo)
@@ -57,13 +55,16 @@ async def list_notifications(
     List notifications for a user.
     """
     try:
-        items = await _maybe_await(getattr(notifier, "list_for_user"), user_id)
+        list_fn = getattr(notifier.repo, "list_for_user", None)
+        if list_fn is None:
+            raise AttributeError("NotificationRepository missing list_for_user")
+        items = await _maybe_await(list_fn, user_id)
         return items
     except AttributeError:
-        logger.error("NotificationService missing list_for_user method")
+        logger.error("NotificationRepository missing list_for_user method")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Notification service misconfigured",
+            detail="Notification repository misconfigured",
         )
     except Exception as exc:
         logger.exception("Failed to list notifications for user=%s", user_id)
@@ -73,34 +74,38 @@ async def list_notifications(
         ) from exc
 
 
-@router.post("/send", response_model=dict)
+@router.post("/send", response_model=Dict[str, Any])
 async def send_push(
     payload: PushNotification,
     notifier: NotificationService = Depends(get_notification_service),
+    token_repo: TokenRepository = Depends(get_token_repository),
 ):
     """
-    Accepts a PushNotification (title, body, topic or token).
-    Here we treat `topic` as a single-device FCM token for simplicity.
-    Returns a dict with message_id on success.
+    Create a notification and optionally send push notifications to all user's tokens.
+    Treats `topic` as a single FCM token if provided, otherwise fetches tokens from the repository.
     """
     try:
-        send_fn = getattr(notifier, "send_push", None)
-        if send_fn is None:
-            logger.error("NotificationService missing send_push method")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Notification service misconfigured",
-            )
+        fcm_tokens: List[str] = []
+        if payload.topic:
+            fcm_tokens = [payload.topic]  # Single token
+        else:
+            # fetch all tokens for the user_id if topic not provided
+            if hasattr(payload, "user_id") and payload.user_id:
+                fcm_tokens = await token_repo.get_tokens(payload.user_id)
 
-        fcm_token = payload.topic  # treating topic as a single-device token
-        title = payload.title
-        body = payload.body
-
-        message_id = await _maybe_await(send_fn, fcm_token, title, body)
-        return {"message_id": message_id}
+        result = await notifier.create_and_notify(
+            user_id=getattr(payload, "user_id", "unknown"),
+            sub_type="generic",
+            location="N/A",
+            phone="N/A",
+            message=payload.body,
+            title=payload.title,
+            token_repo=token_repo if fcm_tokens else None,
+        )
+        return result
     except Exception as exc:
         logger.exception(
-            "Failed to send push notification to token=%s", payload.topic
+            "Failed to send push notification to payload=%s", payload.dict()
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

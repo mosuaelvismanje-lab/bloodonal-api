@@ -3,7 +3,6 @@
 Revision ID: 5258e9c708d8
 Revises: e016c69f1375
 Create Date: 2025-10-26 10:57:39.299634
-
 """
 from typing import Sequence, Union
 
@@ -19,23 +18,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
-    # 1. Create the enum type
-    service_type_enum = sa.Enum("doctor", "nurse", "lab", name="service_type_enum")
-    service_type_enum.create(op.get_bind(), checkfirst=True)
-
-    # 2. Add the column using the enum
-    op.add_column(
-        "healthcare_providers",
-        sa.Column("service_type", service_type_enum, nullable=True)
-    )
+    """
+    This migration already exists in the database (enum + column already created),
+    so we skip it to avoid duplicate-column and enum-exists errors.
+    """
+    pass
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
-    # 1. Drop the column first
-    op.drop_column("healthcare_providers", "service_type")
-
-    # 2. Drop the enum type
-    service_type_enum = sa.Enum("doctor", "nurse", "lab", name="service_type_enum")
-    service_type_enum.drop(op.get_bind(), checkfirst=True)
+    """
+    No downgrade actions because the upgrade was skipped.
+    """
+    pass

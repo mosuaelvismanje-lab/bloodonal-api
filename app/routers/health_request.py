@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.config import settings
 from app.crud.healthcare_request import (
     create_healthcare_request,
     get_healthcare_requests,
@@ -15,7 +16,7 @@ from app.crud.healthcare_request import (
 )
 from app.crud.healthcare_provider import get_provider_by_id
 from app.database import get_async_session
-from config import settings
+
 from app.schemas.healthcare_requests import HealthcareRequest, HealthcareRequestCreate
 
 logger = logging.getLogger(__name__)

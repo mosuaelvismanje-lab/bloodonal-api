@@ -1,11 +1,11 @@
-# app/repositories/token_repository.py
-
+# File: app/repositories/token_repository.py
 import logging
+from typing import List
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.models.token import UserToken  # <-- you’ll need to create this model (see below)
+from app.models.token import UserToken  # <-- Make sure this model exists
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class TokenRepository:
             result = await self.session.execute(
                 select(UserToken).where(UserToken.user_id == user_id)
             )
-            existing = result.scalar_one_or_none()
+            existing: UserToken | None = result.scalar_one_or_none()
 
             if existing:
                 existing.token = token
@@ -38,12 +38,12 @@ class TokenRepository:
                 logger.debug("Inserted new FCM token for user_id=%s", user_id)
 
             await self.session.commit()
-        except SQLAlchemyError as e:
+        except SQLAlchemyError:
             await self.session.rollback()
             logger.exception("Failed to upsert FCM token for user_id=%s", user_id)
             raise
 
-    async def get_tokens_by_user(self, user_id: str) -> list[str]:
+    async def get_tokens(self, user_id: str) -> List[str]:
         """
         Return all tokens for a given user_id.
         """
@@ -51,8 +51,9 @@ class TokenRepository:
             result = await self.session.execute(
                 select(UserToken.token).where(UserToken.user_id == user_id)
             )
-            tokens = [row[0] for row in result.fetchall()]
+            tokens: List[str] = [row[0] for row in result.fetchall()]
+            logger.debug("Fetched %d tokens for user_id=%s", len(tokens), user_id)
             return tokens
-        except SQLAlchemyError as e:
+        except SQLAlchemyError:
             logger.exception("Failed to fetch tokens for user_id=%s", user_id)
             raise
