@@ -1,4 +1,3 @@
-
 alembic==1.16.2
 annotated-types==0.7.0
 anyio==4.9.0
@@ -62,3 +61,8 @@ uritemplate==4.2.0
 urllib3==2.5.0
 uvicorn==0.34.3
 wheel==0.45.1
+
+# PostgreSQL drivers
+psycopg2==2.9.9   # synchronous driver for Alembic migrations
+asyncpg==0.30.0   # async driver for FastAPI / async SQLAlchemy
+
