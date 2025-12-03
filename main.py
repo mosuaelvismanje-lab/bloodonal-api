@@ -10,13 +10,13 @@ import uuid
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-from fastapi import FastAPI, Depends, APIRouter, HTTPException
+from fastapi import FastAPI, Depends, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import text
 
 from app.config import settings
-from app.database import engine, Base
+from app.database import Base  # declarative base for Alembic / async
 
 # -------------------------
 # Logging
@@ -24,11 +24,11 @@ from app.database import engine, Base
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bloodonal")
 
-# Global variable to track Firebase initialization
+# -------------------------
+# Firebase helper functions
+# -------------------------
 global firebase_ready
 firebase_ready: bool = False
-
-# Track temporary Firebase credential files
 _FIREBASE_TEMP_CRED_FILES = []
 
 def _write_temp_json(json_str: str) -> str:
@@ -58,10 +58,9 @@ def _cleanup_firebase_temp_files():
 
 atexit.register(_cleanup_firebase_temp_files)
 
-# -------------------------
-# Firebase Initialization
-# -------------------------
 def init_firebase() -> bool:
+    """Initialize Firebase Admin SDK."""
+    global firebase_ready
     try:
         firebase_admin.get_app()
         log.info("Firebase default app already initialized.")
@@ -73,45 +72,32 @@ def init_firebase() -> bool:
     cred = None
     source = "unknown"
 
+    # Try GOOGLE_APPLICATION_CREDENTIALS
     gac_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if gac_path and os.path.exists(gac_path):
-        try:
-            cred = credentials.Certificate(gac_path)
-            source = f"GOOGLE_APPLICATION_CREDENTIALS from path: {gac_path}"
-        except Exception as e:
-            log.warning(f"Failed loading GOOGLE_APPLICATION_CREDENTIALS: {e}")
+        cred = credentials.Certificate(gac_path)
+        source = f"GOOGLE_APPLICATION_CREDENTIALS from path: {gac_path}"
 
-    if not cred:
-        render_secret_path = "/etc/secrets/FIREBASE_CREDENTIALS_JSON"
-        if os.path.exists(render_secret_path):
-            try:
-                cred = credentials.Certificate(render_secret_path)
-                source = f"Render secret file: {render_secret_path}"
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = render_secret_path
-            except Exception as e:
-                log.warning(f"Failed loading Render secret: {e}")
+    # Render secret
+    render_secret_path = "/etc/secrets/FIREBASE_CREDENTIALS_JSON"
+    if not cred and os.path.exists(render_secret_path):
+        cred = credentials.Certificate(render_secret_path)
+        source = f"Render secret file: {render_secret_path}"
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = render_secret_path
 
-    if not cred:
-        firebase_json = os.environ.get("FIREBASE_CREDENTIALS_JSON")
-        if firebase_json:
-            try:
-                path = _write_temp_json(firebase_json)
-                cred = credentials.Certificate(path)
-                source = "FIREBASE_CREDENTIALS_JSON env content"
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
-            except Exception as e:
-                log.warning(f"Failed loading FIREBASE_CREDENTIALS_JSON: {e}")
+    # FIREBASE_CREDENTIALS_JSON env
+    if not cred and os.environ.get("FIREBASE_CREDENTIALS_JSON"):
+        path = _write_temp_json(os.environ["FIREBASE_CREDENTIALS_JSON"])
+        cred = credentials.Certificate(path)
+        source = "FIREBASE_CREDENTIALS_JSON env content"
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
 
-    if not cred:
-        firebase_b64 = os.environ.get("FIREBASE_CRED_BASE64")
-        if firebase_b64:
-            try:
-                path = _write_temp_base64(firebase_b64)
-                cred = credentials.Certificate(path)
-                source = "FIREBASE_CRED_BASE64 env content"
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
-            except Exception as e:
-                log.warning(f"Failed loading FIREBASE_CRED_BASE64: {e}")
+    # FIREBASE_CRED_BASE64 env
+    if not cred and os.environ.get("FIREBASE_CRED_BASE64"):
+        path = _write_temp_base64(os.environ["FIREBASE_CRED_BASE64"])
+        cred = credentials.Certificate(path)
+        source = "FIREBASE_CRED_BASE64 env content"
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
 
     if cred:
         try:
@@ -121,7 +107,7 @@ def init_firebase() -> bool:
             return True
         except ValueError as e:
             if "The default Firebase app already exists." in str(e):
-                log.info("Firebase already initialized concurrently, skipping.")
+                log.info("Firebase already initialized, skipping.")
                 _cleanup_firebase_temp_files()
                 return True
             else:
@@ -135,16 +121,22 @@ def init_firebase() -> bool:
         return False
 
 # -------------------------
-# Database
+# Database Engines
 # -------------------------
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    log.critical("DATABASE_URL environment variable not set. Exiting.")
-    raise RuntimeError("DATABASE_URL environment variable not set")
-
-engine = create_async_engine(DATABASE_URL, echo=False)
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+# Async engine for FastAPI
+ASYNC_DATABASE_URL = os.getenv("ASYNC_DATABASE_URL") or settings.ASYNC_DATABASE_URL
+if not ASYNC_DATABASE_URL:
+    raise RuntimeError("ASYNC_DATABASE_URL not set")
+async_engine = create_async_engine(ASYNC_DATABASE_URL, echo=settings.DEBUG)
+AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
 log.info("✅ Async SQLAlchemy engine initialized")
+
+# Sync engine for Alembic / migrations
+DATABASE_URL = os.getenv("DATABASE_URL") or settings.DATABASE_URL
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL not set")
+sync_engine = create_engine(DATABASE_URL, echo=settings.DEBUG)
+log.info("✅ Sync SQLAlchemy engine initialized")
 
 # -------------------------
 # Lifespan
@@ -265,7 +257,7 @@ class SessionResponse(BaseModel):
 async def create_call_session(payload: CallRequestPayload):
     room_name = f"call_{uuid.uuid4().hex}"
     session_id = str(uuid.uuid4())
-    token = None  # Add JWT if Jitsi requires authentication
+    token = None  # Add JWT if needed
     return SessionResponse(session_id=session_id, room_name=room_name, token=token)
 
 @call_router.post("/session/voice", response_model=SessionResponse)

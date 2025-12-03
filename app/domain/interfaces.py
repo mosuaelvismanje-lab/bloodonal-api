@@ -1,7 +1,5 @@
-# app/domain/interfaces.py
-
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -11,9 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 class IPaymentGateway(ABC):
     """
-    Contract for any external payment provider.
-    Your app does NOT depend on MTN, OM, Stripe, PayPal, etc.
-    Only this interface.
+    Abstraction for any external payment provider (MTN, OM, Stripe, PayPal, etc).
     """
 
     @abstractmethod
@@ -25,8 +21,8 @@ class IPaymentGateway(ABC):
         metadata: Dict[str, Any]
     ) -> str:
         """
-        Returns provider transaction ID.
-        Must raise errors for invalid payment.
+        Charge user and return provider_transaction_id.
+        Should raise errors on failures.
         """
         raise NotImplementedError
 
@@ -36,7 +32,7 @@ class IPaymentGateway(ABC):
         provider_tx_id: str
     ) -> str:
         """
-        Return: "success", "failed", or "pending".
+        Return status: 'success', 'failed', or 'pending'.
         """
         raise NotImplementedError
 
@@ -47,8 +43,7 @@ class IPaymentGateway(ABC):
 
 class ICallGateway(ABC):
     """
-    Handles call/voice notifications (optional).
-    Example: emergency nurse call, ambulance dispatch, etc.
+    Interface for voice/call alerts (nurse, consultation call, emergency dispatch, etc).
     """
 
     @abstractmethod
@@ -58,7 +53,40 @@ class ICallGateway(ABC):
         message: str
     ) -> bool:
         """
-        Return True if call connection success.
+        Returns True if call sent successfully.
+        """
+        raise NotImplementedError
+
+
+# ================================================================
+# CHAT GATEWAY INTERFACE
+# ================================================================
+
+class IChatGateway(ABC):
+    """
+    Interface for creating and managing chat rooms (doctor-patient, support, etc).
+    """
+
+    @abstractmethod
+    async def create_chat_room(
+        self,
+        user_id: str,
+        recipient_id: str
+    ) -> str:
+        """
+        Should return a unique chat_room_id.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def send_message(
+        self,
+        room_id: str,
+        sender_id: str,
+        content: str
+    ) -> bool:
+        """
+        Returns True if message was delivered.
         """
         raise NotImplementedError
 
@@ -69,14 +97,14 @@ class ICallGateway(ABC):
 
 class ISmsGateway(ABC):
     """
-    Contract for sending SMS / notifications.
+    Abstraction for SMS and notification services.
     """
 
     @abstractmethod
     async def send_sms(
         self,
         phone_number: str,
-        message: str,
+        message: str
     ) -> bool:
         raise NotImplementedError
 
@@ -87,12 +115,7 @@ class ISmsGateway(ABC):
 
 class IUsageRepository(ABC):
     """
-    Abstracts how 'free usage' is stored.
-    Could be stored in:
-    - Postgres
-    - Redis (fast)
-    - MongoDB
-    - Firebase
+    Manages user usage/quota for categories (consultation, chat, call, AI analysis, etc).
     """
 
     @abstractmethod
@@ -120,7 +143,7 @@ class IUsageRepository(ABC):
 
 class IPaymentLedgerRepository(ABC):
     """
-    Storing transaction records internally.
+    Interface for storing and updating payment transactions internally.
     """
 
     @abstractmethod
@@ -137,7 +160,7 @@ class IPaymentLedgerRepository(ABC):
         metadata: Dict[str, Any],
     ) -> Any:
         """
-        Return DB record or ID.
+        Must return DB record or primary key of created payment.
         """
         raise NotImplementedError
 
@@ -154,21 +177,20 @@ class IPaymentLedgerRepository(ABC):
     async def get_pending_transactions(
         self,
         db: AsyncSession
-    ) -> list:
+    ) -> List[Any]:
         """
-        For reconciliation service.
+        Get all pending payments for reconciliation.
         """
         raise NotImplementedError
 
 
 # ================================================================
-# SERVICE ORCHESTRATION CONTRACT
+# TOP-LEVEL SERVICE ORCHESTRATION
 # ================================================================
 
 class IPaymentProcessor(ABC):
     """
-    The highest-level abstraction:
-    Any payment flow MUST implement this.
+    High-level interface for orchestrating complete payment flows.
     """
 
     @abstractmethod
