@@ -1,7 +1,6 @@
 import os
 import base64
 import tempfile
-import uvicorn
 import logging
 import atexit
 from contextlib import asynccontextmanager
@@ -280,6 +279,4 @@ async def end_call(request: EndCallRequest):
 
 app.include_router(call_router)
 
-# -------------------------
-# Run Uvicorn if executed directly
-# -------------------------
+# 🚫 NO uvicorn.run() here
