@@ -1,11 +1,13 @@
-from .stripe_adapter import StripePaymentGateway
+# app/gateways/__init__.py
+
+from .stripe_adapter import StripeAdapter
 from .flutterwave_adapter import FlutterwavePaymentGateway
 from .mtn_momo_adapter import MTNMomoPaymentGateway
-from .mock_adapter import MockPaymentGateway
+from .mock_adapter import MockAdapter
 
 __all__ = [
-    "StripePaymentGateway",
+    "StripeAdapter",
     "FlutterwavePaymentGateway",
     "MTNMomoPaymentGateway",
-    "MockPaymentGateway",
+    "MockAdapter",
 ]
