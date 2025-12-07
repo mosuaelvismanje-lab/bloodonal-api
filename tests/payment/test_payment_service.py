@@ -1,60 +1,34 @@
 import pytest
-from unittest.mock import AsyncMock
-
-from app.services.payment_service import PaymentService, FREE_LIMITS, BASE_FEE
-from app.schemas.payment import PaymentRequest
-
+from unittest.mock import AsyncMock, patch
+from app.gateways.mock_adapter import MockAdapter
+from httpx import Response
 
 @pytest.mark.asyncio
-async def test_free_quota():
-    """User has used 0 of their free quota."""
-    mock_db = AsyncMock()
-    mock_db.scalar.return_value = 0  # no usage yet
-
-    remaining = await PaymentService.get_remaining_free_uses(
-        mock_db,
-        user_id="user123",
-        category="doctor"
-    )
-
-    assert remaining == FREE_LIMITS["doctor"]  # default is 5
-
+async def test_mock_adapter_charge_success():
+    """Test that MockAdapter returns a mock transaction id."""
+    adapter = MockAdapter()
+    mock_user_id = "user123"
+    tx_id = await adapter.charge(user_id=mock_user_id, amount=100)
+    assert tx_id.startswith(f"mock-{mock_user_id}-")
 
 @pytest.mark.asyncio
-async def test_paid_when_quota_exceeded():
-    """User already consumed all free quota."""
-    mock_db = AsyncMock()
-    mock_db.scalar.return_value = FREE_LIMITS["doctor"]  # all used up
+@patch("app.gateways.stripe_adapter.httpx.AsyncClient.post")
+async def test_stripe_adapter_charge_mock(mock_post):
+    """Test StripeAdapter using a mocked HTTP response."""
+    from app.gateways.stripe_adapter import StripeAdapter
+    from types import SimpleNamespace
 
-    remaining = await PaymentService.get_remaining_free_uses(
-        mock_db,
-        user_id="user123",
-        category="doctor"
-    )
+    # Mock the async context manager
+    mock_response = AsyncMock()
+    # Simulate httpx.Response attributes
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"id": "txn_123"}
 
-    assert remaining == 0
+    # Patch the post() call to return an async context manager
+    mock_post.return_value.__aenter__.return_value = mock_response
 
+    adapter = StripeAdapter(api_key="sk_test_dummy")
+    tx_id = await adapter.charge(user_id="user123", amount=100)
 
-@pytest.mark.asyncio
-async def test_record_payment_returns_tx_id():
-    """Ensure a payment is recorded and returns a valid tx_id."""
-    mock_db = AsyncMock()
+    assert tx_id == "txn_123"
 
-    req = PaymentRequest(
-        amount=BASE_FEE["doctor"],
-        metadata={"unit_test": True}
-    )
-
-    result = await PaymentService.process_payment(
-        mock_db,
-        user_id="user123",
-        category="doctor",
-        req=req
-    )
-
-    # Validate returned transaction ID
-    assert result.transaction_id.startswith("doctor-user123-")
-
-    # Ensure DB was used
-    mock_db.add.assert_called_once()
-    mock_db.commit.assert_called_once()

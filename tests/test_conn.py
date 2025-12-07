@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 # Load database URL from environment variables
 ASYNC_DATABASE_URL = os.getenv(
     "ASYNC_DATABASE_URL",
-    "postgresql+asyncpg://neondb_owner:npg_5yc9FbUSihGp@ep-bitter-mouse-a14xm2gk-pooler.ap-southeast-1.aws.neon.tech/neondb"
+    "postgresql+asyncpg://neondb_owner:npg_5yc9FbUSihGp@ep-bitter-mouse-a14xm2gk-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
 )
 
 # Create async engine

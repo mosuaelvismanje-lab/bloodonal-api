@@ -8,14 +8,16 @@ async def test_remaining_doctor_consults(monkeypatch):
     async def mock_get_remaining_free_count(db, user_id, payment_type):
         return 3
 
-    # Update path to match actual module
     monkeypatch.setattr(
-        "app.routers.payments.doctor_payment.get_remaining_free_count",
+        "app.routers.doctor_payment.get_remaining_free_count",
         mock_get_remaining_free_count
     )
 
     async with AsyncClient(app=app, base_url="http://test") as ac:
-        response = await ac.get("/v1/payments/doctor-consults/remaining", params={"user_id": "user123"})
+        response = await ac.get(
+            "/v1/payments/doctor-consults/remaining",
+            params={"user_id": "user123"}
+        )
         assert response.status_code == status.HTTP_200_OK
         assert response.json() == {"remaining": 3}
 
@@ -27,18 +29,20 @@ async def test_pay_doctor_consult_free(monkeypatch):
     async def mock_record_payment(db, user_id, payment_type, amount):
         return "doctor-user123-123456"
 
-    # Update paths to match actual module
     monkeypatch.setattr(
-        "app.routers.payments.doctor_payment.get_remaining_free_count",
+        "app.routers.doctor_payment.get_remaining_free_count",
         mock_get_remaining_free_count
     )
     monkeypatch.setattr(
-        "app.routers.payments.doctor_payment.record_payment",
+        "app.routers.doctor_payment.record_payment",
         mock_record_payment
     )
 
     async with AsyncClient(app=app, base_url="http://test") as ac:
-        response = await ac.post("/v1/payments/doctor-consults", json={"user_id": "user123"})
+        response = await ac.post(
+            "/v1/payments/doctor-consults",
+            json={"user_id": "user123"}
+        )
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["transaction_id"] == "doctor-user123-123456"
