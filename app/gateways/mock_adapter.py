@@ -22,3 +22,11 @@ class MockAdapter(IPaymentGateway):
         # Create a deterministic-ish mock id so tests can assert prefix
         tx_id = f"mock-{user_id}-{uuid.uuid4().hex}"
         return tx_id
+
+    async def verify(self, tx_id: str) -> bool:
+        """
+        Minimal implementation of abstract method.
+
+        Returns True if tx_id starts with "mock-", otherwise False.
+        """
+        return tx_id.startswith("mock-")

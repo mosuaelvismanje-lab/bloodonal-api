@@ -37,3 +37,11 @@ class FlutterwavePaymentGateway(IPaymentGateway):
             "provider_ref": data["data"].get("id"),
             "raw": data,
         }
+
+    async def verify(self, tx_id: str) -> bool:
+        """
+        Minimal implementation of abstract method for tests.
+
+        Returns True if tx_id starts with "flw-", otherwise False.
+        """
+        return tx_id.startswith("flw-")

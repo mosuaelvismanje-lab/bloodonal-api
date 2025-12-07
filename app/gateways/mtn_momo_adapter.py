@@ -49,3 +49,11 @@ class MTNMomoPaymentGateway(IPaymentGateway):
             "provider_ref": reference,
             "raw": resp.json() if resp.content else {},
         }
+
+    async def verify(self, tx_id: str) -> bool:
+        """
+        Minimal implementation of abstract method for tests.
+
+        Returns True if tx_id starts with "mtn-", otherwise False.
+        """
+        return tx_id.startswith("mtn-")

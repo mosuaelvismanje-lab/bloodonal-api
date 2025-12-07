@@ -1,10 +1,9 @@
-# tests/test_conn.py
-
+import os
+import pytest
 import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
-import os
 
 # Load database URL from environment variables
 ASYNC_DATABASE_URL = os.getenv(
@@ -22,18 +21,18 @@ AsyncSessionLocal = sessionmaker(
     expire_on_commit=False
 )
 
+@pytest.mark.asyncio
 async def test_connection():
+    """Test database connectivity."""
     try:
         async with engine.connect() as conn:
-            # Execute a simple test query
             result = await conn.execute(text("SELECT 1"))
             row = result.fetchone()
-            print("Connection successful, test query result:", row[0])
-
-        # Optional: close the engine
+            assert row[0] == 1, "Test query did not return expected result"
+    finally:
         await engine.dispose()
-    except Exception as e:
-        print("Connection failed:", e)
 
+# Optional: allow running as standalone script
 if __name__ == "__main__":
     asyncio.run(test_connection())
+

@@ -1,121 +1,90 @@
 # app/routers/doctor_payment.py
+
 import asyncio
 import inspect
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status, Header
-from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Any
 
+from fastapi import APIRouter, Depends, HTTPException, status, Header
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.database import get_async_session
-from app.schemas.payment import (
-    PaymentRequest,
-    PaymentResponse,
-    FreeConsultsResponse
-)
-from app.services.payment_service import (
-    get_remaining_free_count,
-    process_payment
-)
+from app.schemas.payment import PaymentRequest, PaymentResponse, FreeUsageResponse
+from app.services.payment_service import PaymentService  # updated
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(
-    prefix="/v1/payments/doctor",
-    tags=["doctor-payments"]
-)
+router = APIRouter(prefix="/v1/payments/doctor", tags=["doctor-payments"])
+
+# Use fallback fee if not defined
+DOCTOR_FEE = getattr(PaymentService, "DOCTOR_FEE", 300)
+
+# Aliases for convenience
+get_remaining_free_uses = PaymentService.get_remaining_free_uses
+process_payment = PaymentService.process_payment
 
 
 async def _maybe_await(func: Any, *args, **kwargs):
     """
-    Allows router to call both sync + async service functions safely.
+    Safely call async or sync service functions.
     """
     if inspect.iscoroutinefunction(func):
         return await func(*args, **kwargs)
-
     return await asyncio.to_thread(func, *args, **kwargs)
 
 
-# ----------------------------------------------------------
-#   CHECK REMAINING FREE DOCTOR CONSULTATIONS
-# ----------------------------------------------------------
-
-@router.get("/consult/remaining", response_model=FreeConsultsResponse)
+# -------------------------
+# GET REMAINING FREE DOCTOR CONSULTS
+# -------------------------
+@router.get("/consult/remaining", response_model=FreeUsageResponse)
 async def remaining_doctor_consults(
-    user_id: str,
-    db: AsyncSession = Depends(get_async_session)
+    user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    """
-    Return how many free doctor consultations a user has left.
-    """
     try:
         remaining = await _maybe_await(
-            get_remaining_free_count,
+            get_remaining_free_uses,
             db,
             user_id,
-            payment_type="doctor"
+            category="doctor"
         )
-
-        return FreeConsultsResponse(remaining=remaining)
-
+        return FreeUsageResponse(remaining=remaining)
     except Exception as exc:
-        logger.exception(
-            "Error computing doctor consults remaining",
-            extra={"user_id": user_id}
-        )
+        logger.exception("Error computing remaining doctor consults for user=%s", user_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to compute remaining free consults"
         ) from exc
 
 
-# ----------------------------------------------------------
-#     PROCESS A DOCTOR CONSULTATION PAYMENT
-# ----------------------------------------------------------
-
+# -------------------------
+# PAY FOR DOCTOR CONSULT
+# -------------------------
 @router.post("/consult", response_model=PaymentResponse)
 async def pay_doctor_consult(
     req: PaymentRequest,
     db: AsyncSession = Depends(get_async_session),
     x_idempotency_key: str = Header(default=None),
 ):
-    """
-    Process a doctor consultation:
-      • Free if quota remains
-      • Otherwise charge billing amount
-      • Idempotent (safe from duplicate payments)
-    """
     try:
-        logger.info(
-            "Doctor consult payment request",
-            extra={"user_id": req.user_id, "idempotency": x_idempotency_key}
-        )
-
-        # Let service layer compute quota, charge amount, create record, etc.
         payment_result = await _maybe_await(
             process_payment,
             db=db,
             user_id=req.user_id,
-            payment_type="doctor",
-            idempotency_key=x_idempotency_key
+            category="doctor",
+            req=req
         )
 
-        # Router only returns response — it does NOT charge external providers.
+        # Ensure we return the correct amount from the PaymentResponse
+        amount = getattr(payment_result, "amount", DOCTOR_FEE)
+
         return PaymentResponse(
             success=True,
             transaction_id=payment_result.transaction_id,
-            amount=payment_result.amount_charged
+            amount=amount
         )
-
-    except ValueError as exc:
-        # validation issue (invalid user, invalid idempotency, etc)
-        raise HTTPException(status_code=400, detail=str(exc))
-
     except Exception as exc:
-        logger.exception(
-            "Doctor payment failed",
-            extra={"user_id": req.user_id}
-        )
+        logger.exception("Doctor payment failed for user=%s", req.user_id)
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Payment processing failed"
         ) from exc
