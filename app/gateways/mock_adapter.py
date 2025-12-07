@@ -1,22 +1,24 @@
+# app/gateways/mock_adapter.py
 import uuid
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from app.domain.interfaces import IPaymentGateway
 
 
-class MockPaymentGateway(IPaymentGateway):
+class MockAdapter(IPaymentGateway):
     """
     Fake gateway for development and unit tests.
+
+    The tests expect `await adapter.charge(user_id=..., amount=...)` and a
+    returned string transaction id that begins with "mock-<user_id>-".
     """
 
-    async def charge(self, amount: int, currency: str, reference: str, metadata: Dict[str, Any]):
-        fake_id = str(uuid.uuid4())
-        return {
-            "status": "success",
-            "provider_ref": fake_id,
-            "raw": {
-                "message": "Mock charge completed",
-                "amount": amount,
-                "currency": currency,
-                "reference": reference
-            }
-        }
+    async def charge(
+        self,
+        user_id: str,
+        amount: int,
+        currency: str = "usd",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        # Create a deterministic-ish mock id so tests can assert prefix
+        tx_id = f"mock-{user_id}-{uuid.uuid4().hex}"
+        return tx_id

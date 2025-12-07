@@ -1,7 +1,7 @@
 import pytest
 from httpx import AsyncClient
 from fastapi import status
-from app.main import app  # your FastAPI app
+from main import app  # your FastAPI app
 
 @pytest.mark.asyncio
 async def test_remaining_doctor_consults(monkeypatch):
