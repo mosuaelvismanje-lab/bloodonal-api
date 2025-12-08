@@ -1,7 +1,6 @@
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import MagicMock, patch
 from app.gateways.mock_adapter import MockAdapter
-from httpx import Response
 
 @pytest.mark.asyncio
 async def test_mock_adapter_charge_success():
@@ -16,15 +15,13 @@ async def test_mock_adapter_charge_success():
 async def test_stripe_adapter_charge_mock(mock_post):
     """Test StripeAdapter using a mocked HTTP response."""
     from app.gateways.stripe_adapter import StripeAdapter
-    from types import SimpleNamespace
 
-    # Mock the async context manager
-    mock_response = AsyncMock()
-    # Simulate httpx.Response attributes
+    # FIX: Use MagicMock instead of AsyncMock for status_code
+    mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {"id": "txn_123"}
 
-    # Patch the post() call to return an async context manager
+    # Patch async context manager
     mock_post.return_value.__aenter__.return_value = mock_response
 
     adapter = StripeAdapter(api_key="sk_test_dummy")

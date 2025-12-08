@@ -9,7 +9,7 @@ async def test_remaining_doctor_consults(monkeypatch):
         return 3
 
     monkeypatch.setattr(
-        "app.routers.doctor_payment.get_remaining_free_count",
+        "app.routers.doctor_payments.get_remaining_free_count",
         mock_get_remaining_free_count
     )
 
@@ -30,11 +30,11 @@ async def test_pay_doctor_consult_free(monkeypatch):
         return "doctor-user123-123456"
 
     monkeypatch.setattr(
-        "app.routers.doctor_payment.get_remaining_free_count",
+        "app.routers.doctor_payments.get_remaining_free_count",
         mock_get_remaining_free_count
     )
     monkeypatch.setattr(
-        "app.routers.doctor_payment.record_payment",
+        "app.routers.doctor_payments.record_payment",
         mock_record_payment
     )
 
