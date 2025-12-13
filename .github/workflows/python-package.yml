@@ -1,22 +1,26 @@
-# Step 5: Run tests with pytest
-    - name: Run tests with pytest (Injecting Placeholder DB Config)
-      # We provide placeholder values for all individual DB variables 
-      # (DB_USER, DB_PASS, DB_HOST, DB_NAME, DB_PORT) 
-      # and the full URL variables (DATABASE_URL, ASYNC_DATABASE_URL).
-      # This guarantees that the configuration check in app/config.py passes.
-      env:
-        # Placeholder values for individual credentials (needed for config fallback check)
-        DB_USER: ci_test_user
-        DB_PASS: ci_test_pass
-        DB_HOST: 127.0.0.1
-        DB_NAME: ci_test_db
-        DB_PORT: 5432
-        
-        # Placeholder values for the full URL (needed to satisfy the primary URL check)
-        # We use the postgresql+asyncpg scheme to satisfy the config's expectations.
-        DATABASE_URL: postgresql://ci_test_user:ci_test_pass@127.0.0.1:5432/ci_test_db
-        ASYNC_DATABASE_URL: postgresql+asyncpg://ci_test_user:ci_test_pass@127.0.0.1:5432/ci_test_db
-        
-      run: |
-        pytest -k "not firebase and not db" --disable-warnings
+# .github/workflows/ci.yml
 
+# Step 5: Run tests with pytest using placeholder DB config
+- name: Run tests with pytest (CI environment)
+  # We inject placeholder environment variables for CI
+  # This ensures config.py checks pass without exposing real secrets
+  env:
+    # Individual DB credentials (used if config.py checks individual values)
+    DB_USER: ci_test_user
+    DB_PASS: ci_test_pass
+    DB_HOST: 127.0.0.1
+    DB_NAME: ci_test_db
+    DB_PORT: 5432
+
+    # Full database URLs (satisfy main config checks)
+    DATABASE_URL: postgresql://ci_test_user:ci_test_pass@127.0.0.1:5432/ci_test_db
+    ASYNC_DATABASE_URL: postgresql+asyncpg://ci_test_user:ci_test_pass@127.0.0.1:5432/ci_test_db
+
+    # Optional: force CI environment in config.py
+    ENVIRONMENT: ci
+    DEBUG: 'False'
+    SECRET_KEY: placeholder_secret
+
+  run: |
+    echo "Running CI tests with placeholder DB..."
+    pytest -k "not firebase and not db" --disable-warnings --maxfail=5 --tb=short

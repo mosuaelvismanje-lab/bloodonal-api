@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from pathlib import Path
 from typing import List, Optional, Union, Annotated, Dict
 from urllib.parse import quote_plus, urlparse, urlunparse, parse_qs, urlencode
@@ -11,13 +10,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
 
 class Settings(BaseSettings):
     """
-    Application settings loaded from environment (or .env).
+    Application settings loaded from environment or .env.
     """
 
     # -------------------------
     # General / runtime
     # -------------------------
-    ENVIRONMENT: str = "development"
+    ENVIRONMENT: str = "development"  # development | staging | production | ci
     DEBUG: bool = False
     SECRET_KEY: str = "please-change-me"
     PYTHONUNBUFFERED: int = 1
@@ -93,7 +92,7 @@ class Settings(BaseSettings):
     # Helper properties
     # -------------------------
     def _add_ssl_mode(self, url: str) -> str:
-        """Append sslmode=require if not present."""
+        """Append sslmode=require if missing."""
         try:
             parsed = urlparse(url)
         except ValueError:
@@ -114,7 +113,7 @@ class Settings(BaseSettings):
 
     @property
     def SYNC_DATABASE_URL(self) -> str:
-        """Return a synchronous SQLAlchemy URL using psycopg2."""
+        """Synchronous SQLAlchemy URL for psycopg2."""
         url = self._effective_db_url
         if url:
             if url.startswith("postgresql+asyncpg://"):
@@ -127,19 +126,18 @@ class Settings(BaseSettings):
                 url = f"{base}+psycopg2://{rest}"
             return self._add_ssl_mode(url)
 
-        # Fallback using individual credentials
         if not all([self.DB_USER, self.DB_PASS, self.DB_HOST, self.DB_NAME]):
             raise RuntimeError("Database credentials incomplete for sync URL")
         user = quote_plus(self.DB_USER)
         password = quote_plus(self.DB_PASS)
         host = self.DB_HOST
-        port = self.DB_PORT or 5432
+        port = self.DB_PORT
         name = self.DB_NAME
         return self._add_ssl_mode(f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{name}")
 
     @property
     def ASYNC_DATABASE_URL(self) -> str:
-        """Return an asynchronous SQLAlchemy URL using asyncpg."""
+        """Asynchronous SQLAlchemy URL for asyncpg."""
         url = self._effective_db_url
         if url:
             if url.startswith("postgresql+asyncpg://"):
@@ -152,19 +150,18 @@ class Settings(BaseSettings):
                 url = f"{base}+asyncpg://{rest}"
             return self._add_ssl_mode(url)
 
-        # Fallback using individual credentials
         if not all([self.DB_USER, self.DB_PASS, self.DB_HOST, self.DB_NAME]):
             raise RuntimeError("Database credentials incomplete for async URL")
         user = quote_plus(self.DB_USER)
         password = quote_plus(self.DB_PASS)
         host = self.DB_HOST
-        port = self.DB_PORT or 5432
+        port = self.DB_PORT
         name = self.DB_NAME
         return self._add_ssl_mode(f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}")
 
     @property
     def GOOGLE_CREDENTIALS_PATH(self) -> Optional[Path]:
-        """Return path to Firebase credentials JSON (temp file if content provided)."""
+        """Return path to Firebase JSON (temporary file if JSON string is provided)."""
         if self.FIREBASE_CREDENTIALS_JSON:
             tmp_file = NamedTemporaryFile(delete=False, suffix=".json")
             tmp_file.write(self.FIREBASE_CREDENTIALS_JSON.encode("utf-8"))
@@ -204,7 +201,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="allow",
+        extra="allow",  # allow additional env variables for CI/production
+        case_sensitive=True,  # enforce proper case for production
     )
 
 
