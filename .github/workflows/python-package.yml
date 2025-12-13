@@ -1,26 +1,37 @@
-# .github/workflows/ci.yml
+name: Python CI
 
-# Step 5: Run tests with pytest using placeholder DB config
-- name: Run tests with pytest (CI environment)
-  # We inject placeholder environment variables for CI
-  # This ensures config.py checks pass without exposing real secrets
-  env:
-    # Individual DB credentials (used if config.py checks individual values)
-    DB_USER: ci_test_user
-    DB_PASS: ci_test_pass
-    DB_HOST: 127.0.0.1
-    DB_NAME: ci_test_db
-    DB_PORT: 5432
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
-    # Full database URLs (satisfy main config checks)
-    DATABASE_URL: postgresql://ci_test_user:ci_test_pass@127.0.0.1:5432/ci_test_db
-    ASYNC_DATABASE_URL: postgresql+asyncpg://ci_test_user:ci_test_pass@127.0.0.1:5432/ci_test_db
+jobs:
+  test:
+    runs-on: ubuntu-latest
 
-    # Optional: force CI environment in config.py
-    ENVIRONMENT: ci
-    DEBUG: 'False'
-    SECRET_KEY: placeholder_secret
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-  run: |
-    echo "Running CI tests with placeholder DB..."
-    pytest -k "not firebase and not db" --disable-warnings --maxfail=5 --tb=short
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.12
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests with pytest (Injecting Placeholder DB Config)
+        env:
+          DB_USER: ci_test_user
+          DB_PASS: ci_test_pass
+          DB_HOST: 127.0.0.1
+          DB_NAME: ci_test_db
+          DB_PORT: 5432
+          DATABASE_URL: postgresql://ci_test_user:ci_test_pass@127.0.0.1:5432/ci_test_db
+          ASYNC_DATABASE_URL: postgresql+asyncpg://ci_test_user:ci_test_pass@127.0.0.1:5432/ci_test_db
+        run: |
+          pytest -k "not firebase and not db" --disable-warnings
