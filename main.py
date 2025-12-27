@@ -1,3 +1,4 @@
+# main.py
 import os
 import base64
 import tempfile
@@ -12,11 +13,12 @@ from firebase_admin import credentials, firestore
 
 from fastapi import FastAPI, Depends, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy import text
 
 from app.config import settings
-from app.database import Base  # declarative base for Alembic / async
+from app.database import Base  # ensures models are imported for Alembic (no side-effects)
+from app.db.session import get_db  # dependency that yields AsyncSession (async SQLAlchemy)
+# NOTE: app.db.session must create the async engine and AsyncSessionLocal
 
 # -------------------------
 # Logging
@@ -25,11 +27,9 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bloodonal")
 
 # -------------------------
-# Firebase helper functions
+# Firebase temp-file helpers
 # -------------------------
-global firebase_ready
-firebase_ready: bool = False
-_FIREBASE_TEMP_CRED_FILES = []
+_FIREBASE_TEMP_CRED_FILES: list[str] = []
 
 def _write_temp_json(json_str: str) -> str:
     fd, path = tempfile.mkstemp(prefix="firebase_", suffix=".json")
@@ -48,7 +48,7 @@ def _write_temp_base64(b64: str) -> str:
     return path
 
 def _cleanup_firebase_temp_files():
-    for path in _FIREBASE_TEMP_CRED_FILES:
+    for path in list(_FIREBASE_TEMP_CRED_FILES):
         try:
             os.remove(path)
             log.debug(f"Cleaned up temporary credential file: {path}")
@@ -59,8 +59,7 @@ def _cleanup_firebase_temp_files():
 atexit.register(_cleanup_firebase_temp_files)
 
 def init_firebase() -> bool:
-    """Initialize Firebase Admin SDK."""
-    global firebase_ready
+    """Initialize Firebase Admin SDK if credentials are present."""
     try:
         firebase_admin.get_app()
         log.info("Firebase default app already initialized.")
@@ -72,27 +71,28 @@ def init_firebase() -> bool:
     cred = None
     source = "unknown"
 
-    # Try GOOGLE_APPLICATION_CREDENTIALS
+    # 1) GOOGLE_APPLICATION_CREDENTIALS path
     gac_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if gac_path and os.path.exists(gac_path):
         cred = credentials.Certificate(gac_path)
         source = f"GOOGLE_APPLICATION_CREDENTIALS from path: {gac_path}"
 
-    # Render secret
+    # 2) Render / container secret file path
     render_secret_path = "/etc/secrets/FIREBASE_CREDENTIALS_JSON"
     if not cred and os.path.exists(render_secret_path):
         cred = credentials.Certificate(render_secret_path)
         source = f"Render secret file: {render_secret_path}"
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = render_secret_path
 
-    # FIREBASE_CREDENTIALS_JSON env
-    if not cred and os.environ.get("FIREBASE_CREDENTIALS_JSON"):
-        path = _write_temp_json(os.environ["FIREBASE_CREDENTIALS_JSON"])
+    # 3) Explicit env var with JSON content
+    env_json = os.environ.get("FIREBASE_CREDENTIALS_JSON")
+    if not cred and env_json:
+        path = _write_temp_json(env_json)
         cred = credentials.Certificate(path)
         source = "FIREBASE_CREDENTIALS_JSON env content"
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
 
-    # FIREBASE_CRED_BASE64 env
+    # 4) Base64-encoded env var
     if not cred and os.environ.get("FIREBASE_CRED_BASE64"):
         path = _write_temp_base64(os.environ["FIREBASE_CRED_BASE64"])
         cred = credentials.Certificate(path)
@@ -106,74 +106,66 @@ def init_firebase() -> bool:
             _cleanup_firebase_temp_files()
             return True
         except ValueError as e:
+            # default app exists
             if "The default Firebase app already exists." in str(e):
                 log.info("Firebase already initialized, skipping.")
                 _cleanup_firebase_temp_files()
                 return True
-            else:
-                log.error(f"Failed Firebase init from {source}: {e}")
-                return False
+            log.error(f"Failed Firebase init from {source}: {e}")
+            return False
         except Exception as e:
             log.error(f"Unexpected Firebase init error from {source}: {e}")
             return False
-    else:
-        log.error("No valid Firebase credentials found.")
-        return False
+
+    log.info("No Firebase credentials found; skipping Firebase initialization.")
+    return False
 
 # -------------------------
-# Database Engines
-# -------------------------
-# Async engine for FastAPI
-ASYNC_DATABASE_URL = os.getenv("ASYNC_DATABASE_URL") or settings.ASYNC_DATABASE_URL
-if not ASYNC_DATABASE_URL:
-    raise RuntimeError("ASYNC_DATABASE_URL not set")
-async_engine = create_async_engine(ASYNC_DATABASE_URL, echo=settings.DEBUG)
-AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
-log.info("✅ Async SQLAlchemy engine initialized")
-
-# Sync engine for Alembic / migrations
-DATABASE_URL = os.getenv("DATABASE_URL") or settings.DATABASE_URL
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL not set")
-sync_engine = create_engine(DATABASE_URL, echo=settings.DEBUG)
-log.info("✅ Sync SQLAlchemy engine initialized")
-
-# -------------------------
-# Lifespan
+# Application lifespan
 # -------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global firebase_ready
+    # initialize firebase (if possible)
     firebase_ready = init_firebase()
+    log.info("Lifespan startup complete (firebase_ready=%s)", firebase_ready)
     yield
     log.info("🛑 Application shutdown complete")
+    _cleanup_firebase_temp_files()
 
 # -------------------------
-# FastAPI App
+# FastAPI app instance
 # -------------------------
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.API_VERSION,
-    description="Handles blood donation, consultations, notifications, and more.",
+    description="Bloodonal API — consultations, payments, notifications, and more.",
     lifespan=lifespan,
     docs_url="/docs" if settings.DEBUG else None,
-    redoc_url="/redoc" if settings.DEBUG else None
+    redoc_url="/redoc" if settings.DEBUG else None,
 )
 
 # -------------------------
 # CORS
 # -------------------------
+origins_raw = os.getenv("ALLOWED_ORIGINS") or settings.ALLOWED_ORIGINS or ""
+if isinstance(origins_raw, str) and origins_raw.strip():
+    # allow comma-separated entries in env
+    allowed = [o.strip() for o in origins_raw.split(",") if o.strip()]
+else:
+    allowed = ["http://localhost"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS or ["http://localhost"],
+    allow_origins=allowed,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # -------------------------
-# Import Routers
+# Include routers
 # -------------------------
+# Core routers (v1)
 from app.routers import (
     blood_donor,
     blood_request,
@@ -185,9 +177,29 @@ from app.routers import (
     notifications,
     consultation,
 )
-from app.api.routers import payments
 
+# API / payment & admin dashboards (new structure)
+# payments router is under app.api.routers.payments (or app.api.routers)
+try:
+    from app.api.routers import payments as payments_module
+    payments_router = getattr(payments_module, "router", None) or payments_module.router
+except Exception:
+    payments_router = None
+
+# Admin and dashboard (app.api.admin, app.api.dashboard)
+try:
+    from app.api.admin import router as admin_router
+except Exception:
+    admin_router = None
+
+try:
+    from app.api.dashboard import router as dashboard_router
+except Exception:
+    dashboard_router = None
+
+# Group API v1 routers
 api_router = APIRouter(prefix=f"/{settings.API_VERSION}")
+
 api_router.include_router(blood_donor.router)
 api_router.include_router(blood_request.router)
 api_router.include_router(health_provider.router)
@@ -199,44 +211,54 @@ api_router.include_router(notifications.router)
 api_router.include_router(consultation.router)
 
 app.include_router(api_router)
-app.include_router(payments.router)
+
+# include payments/admin/dashboard if available
+if payments_router:
+    app.include_router(payments_router)
+if admin_router:
+    app.include_router(admin_router)
+if dashboard_router:
+    app.include_router(dashboard_router)
 
 # -------------------------
-# DB Dependency
+# DB dependency (exposed here for quick usage)
 # -------------------------
-async def get_db() -> AsyncSession:
-    async with AsyncSessionLocal() as session:
-        yield session
+# Prefer importing get_db from app.db.session across the project.
+# This is provided so routes can do: session: AsyncSession = Depends(get_db)
+def get_db_dependency():
+    return get_db
 
 # -------------------------
-# Health / Test
+# Health / test endpoints
 # -------------------------
 @app.get("/", tags=["health"])
 async def root():
     return {"message": f"{settings.PROJECT_NAME} (API {settings.API_VERSION}) is up and running!"}
 
-@app.get("/firebase-test")
+@app.get("/firebase-test", tags=["health"])
 async def firebase_test():
-    global firebase_ready
-    if not firebase_ready:
-        return {"error": "Firebase Admin SDK not initialized."}
     try:
+        # will raise if firebase not initialized
         db = firestore.client()
-        collections = [col.id for col in db.collections()]
+        collections = [c.id for c in db.collections()]
         return {"collections": collections}
     except Exception as e:
         return {"error": str(e)}
 
-@app.get("/db-test")
-async def db_test_route(session: AsyncSession = Depends(get_db)):
+@app.get("/db-test", tags=["health"])
+async def db_test_route(session = Depends(get_db)):
+    """
+    Simple DB connectivity test. Uses get_db from app.db.session.
+    """
     try:
+        # raw SQL test (should work with async engine)
         result = await session.execute(text("SELECT 1 as is_connected"))
-        return {"message": "PostgreSQL connection successful!", "result": result.scalar()}
+        return {"message": "PostgreSQL connection successful!", "result": int(result.scalar_one())}
     except Exception as e:
         return {"error": f"Database query failed: {e}"}
 
 # -------------------------
-# Call / Video Endpoints
+# Simple call/session endpoints (example)
 # -------------------------
 call_router = APIRouter(prefix="/calls", tags=["calls"])
 
@@ -257,7 +279,7 @@ class SessionResponse(BaseModel):
 async def create_call_session(payload: CallRequestPayload):
     room_name = f"call_{uuid.uuid4().hex}"
     session_id = str(uuid.uuid4())
-    token = None  # Add JWT if needed
+    token = None
     return SessionResponse(session_id=session_id, room_name=room_name, token=token)
 
 @call_router.post("/session/voice", response_model=SessionResponse)
@@ -279,4 +301,6 @@ async def end_call(request: EndCallRequest):
 
 app.include_router(call_router)
 
-# 🚫 NO uvicorn.run() here
+# -------------------------
+# Nothing to run at import time (no uvicorn.run)
+# -------------------------
