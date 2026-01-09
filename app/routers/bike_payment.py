@@ -1,4 +1,5 @@
 # app/routers/bike_payment.py
+
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -11,12 +12,16 @@ from app.api.dependencies import get_current_user, get_db_session
 from app.schemas.payment import PaymentRequest, PaymentResponse, FreeUsageResponse, PaymentStatus
 from app.domain.usecases import ConsultationUseCase
 from app.data.repositories import UsageRepository
+from app.services.payment_service import PaymentService  # ✅ added for service exports
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/payments/bike", tags=["payments"])
 
 
+# -------------------------
+# GET REMAINING FREE BIKE RIDES
+# -------------------------
 @router.get("/remaining", response_model=FreeUsageResponse)
 async def remaining_free_bike_rides(
     user_id: Optional[str] = None,
@@ -28,7 +33,7 @@ async def remaining_free_bike_rides(
     """
     try:
         used = await UsageRepository(db).count(user_id or "")
-        free_limit = 0  # keep fallback, real limit comes from domain/usecases if needed
+        free_limit = 0  # fallback, real limit can come from domain/usecases
         return FreeUsageResponse(remaining=max(0, free_limit - used))
     except Exception:
         logger.exception("Error fetching remaining bike rides")
@@ -38,6 +43,9 @@ async def remaining_free_bike_rides(
         )
 
 
+# -------------------------
+# PAY FOR BIKE RIDE
+# -------------------------
 @router.post("/", response_model=PaymentResponse)
 async def pay_for_bike(
     req: PaymentRequest,
@@ -80,3 +88,10 @@ async def pay_for_bike(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Bike payment failed",
         )
+
+
+# -------------------------
+# Export service aliases for central router / tests
+# -------------------------
+get_remaining_free_uses = PaymentService.get_remaining_free_uses
+process_payment = PaymentService.process_payment
