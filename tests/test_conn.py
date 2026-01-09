@@ -1,9 +1,15 @@
+import os
 import pytest
 from sqlalchemy import text
 # Import the engine and session logic directly from your app
 from app.db.session import engine, AsyncSessionLocal
 
-
+# This decorator checks if the test is running in GitHub Actions.
+# If 'GITHUB_ACTIONS' environment variable is true, it skips the test.
+@pytest.mark.skipif(
+    os.getenv("GITHUB_ACTIONS") == "true",
+    reason="Skipping DB connection test in GitHub Actions (No local DB available)."
+)
 @pytest.mark.asyncio
 async def test_connection():
     """
@@ -32,4 +38,3 @@ async def test_connection():
     finally:
         # Clean up connection pool after the test
         await engine.dispose()
-

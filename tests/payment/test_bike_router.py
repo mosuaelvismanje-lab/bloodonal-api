@@ -16,6 +16,7 @@ async def override_get_current_user():
 
 
 async def override_get_db():
+    # Returning a string is fine because we mock the UseCase handle
     yield "mock_session"
 
 
@@ -32,7 +33,7 @@ async def test_pay_bike_success(monkeypatch):
     """
 
     # 2. Mock the handle method in the usecase
-    # This prevents the test from actually hitting your Neon database
+    # This prevents the test from actually hitting your database
     async def mock_handle(*args, **kwargs):
         return "mock-bike-tx-id"
 
@@ -49,15 +50,18 @@ async def test_pay_bike_success(monkeypatch):
 
     # 4. Use ASGITransport for testing FastAPI directly
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    # follow_redirects=True is key to fixing the 307 error
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as ac:
         response = await ac.post(
-            "/v1/payments/bike/",  # Ensure the trailing slash matches your router
+            "/v1/payments/bike/",
             json=payload,
             headers={"Authorization": "Bearer fake-token"}
         )
 
     # 5. Assertions
+    # Status 200 is expected now that redirects are handled
     assert response.status_code == status.HTTP_200_OK
+
     data = response.json()
     assert data["success"] is True
     assert "mock-bike-tx-id" in data["message"]
