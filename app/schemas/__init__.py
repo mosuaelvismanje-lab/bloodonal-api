@@ -3,6 +3,7 @@
 from .payment import (
     PaymentRequest,
     PaymentResponse,
+    PaymentStatus,      # ✅ Added for central access
     FreeUsageResponse,
 )
 
@@ -16,9 +17,10 @@ from .nurse_payment import (
     NursePaymentResponse,
 )
 
-from .biker_payment import (
-    BikerPaymentRequest,
-    BikerPaymentResponse,
+from .bike_payment import (
+    BikePaymentRequest,
+    BikePaymentResponse,
+    BikeFreeUsageResponse,  # ✅ Added to match the bike router's /remaining endpoint
 )
 
 from .taxi_payment import (

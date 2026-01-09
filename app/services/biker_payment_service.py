@@ -1,48 +1,41 @@
-# app/services/biker_payment_service.py
-
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.payment_service import PaymentService
-from app.schemas.biker_payment import BikerPaymentRequest, BikerPaymentResponse
+from app.schemas.bike_payment import BikePaymentRequest, BikePaymentResponse
 
-
-class BikerPaymentService:
+class BikePaymentService: # ✅ Renamed from BikerPaymentService
     """
-    Service to process biker payments.
+    Service to process bike payments.
     Delegates actual payment processing to PaymentService.
     """
 
     @staticmethod
     async def process(
         db: AsyncSession,
-        req: BikerPaymentRequest
-    ) -> BikerPaymentResponse:
+        req: BikePaymentRequest,
+        user_id: str # ✅ Added user_id as an argument since it's not in the request body anymore
+    ) -> BikePaymentResponse:
         """
-        Process a biker payment.
-
-        Args:
-            db: Async SQLAlchemy session.
-            req: BikerPaymentRequest containing user_id, biker_id, optional ride_distance_km, and metadata.
-
-        Returns:
-            BikerPaymentResponse with success, transaction_id, status, and message.
+        Process a bike payment.
         """
 
-        # Call the generic PaymentService
+        # ✅ FIX: Use fields that actually exist in your new BikePaymentRequest
+        # The new schema only has 'phone' and 'metadata'
         payment_result = await PaymentService.process_payment(
             db=db,
-            user_id=req.user_id,
+            user_id=user_id,
             category="biker",
             req_data={
-                "biker_id": req.biker_id,
-                "ride_distance_km": req.ride_distance_km,
+                "phone": req.phone,
                 "metadata": req.metadata
             }
         )
 
-        # Map generic PaymentResponse to BikerPaymentResponse
-        return BikerPaymentResponse(
+        # ✅ FIX: Map to the new BikePaymentResponse fields
+        # (reference instead of transaction_id, and include expires_at)
+        return BikePaymentResponse(
             success=payment_result.success,
-            transaction_id=payment_result.transaction_id,
+            reference=payment_result.transaction_id or "N/A",
             status=payment_result.status,
+            expires_at=payment_result.expires_at, # Ensure PaymentService returns this
             message=payment_result.message
         )

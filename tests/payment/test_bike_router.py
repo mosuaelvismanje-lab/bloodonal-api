@@ -16,7 +16,7 @@ async def override_get_current_user():
 
 
 async def override_get_db():
-    # Returning a string is fine because we mock the UseCase handle
+    # Returning a string is fine because we mock the UseCase layer
     yield "mock_session"
 
 
@@ -29,12 +29,22 @@ app.dependency_overrides[get_db_session] = override_get_db
 async def test_pay_bike_success(monkeypatch):
     """
     Test successful bike payment initiation.
-    Matches schema requirements (9-digit phone) and router logic.
+    Matches the 4-argument ConsultationUseCase and specific BikePayment schemas.
     """
 
-    # 2. Mock the handle method in the usecase
-    # This prevents the test from actually hitting your database
-    async def mock_handle(*args, **kwargs):
+    # 2. Mock the __init__ to accept the 4 positional arguments required by the UseCase
+    # (usage_repo, payment_gateway, call_gateway, chat_gateway)
+    def mock_init(self, usage_repo, payment_gateway, call_gateway, chat_gateway):
+        pass
+
+    monkeypatch.setattr(
+        "app.domain.usecases.ConsultationUseCase.__init__",
+        mock_init
+    )
+
+    # 3. Mock the handle method
+    # Must match the signature called in the router: (user_id, service, phone, idempotency_key)
+    async def mock_handle(self, user_id, service, phone, idempotency_key=None):
         return "mock-bike-tx-id"
 
     monkeypatch.setattr(
@@ -42,15 +52,16 @@ async def test_pay_bike_success(monkeypatch):
         mock_handle
     )
 
-    # 3. Valid Payload (exactly 9 digits for 'phone' as per your schema)
+    # 4. Valid Payload
+    # Enforces the 9-digit phone validation now present in BikePaymentRequest
     payload = {
         "phone": "677123456",
         "metadata": {"source": "mobile_app"}
     }
 
-    # 4. Use ASGITransport for testing FastAPI directly
+    # 5. Execute Request
     transport = ASGITransport(app=app)
-    # follow_redirects=True is key to fixing the 307 error
+    # follow_redirects=True handles the trailing slash (307 redirect) automatically
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as ac:
         response = await ac.post(
             "/v1/payments/bike/",
@@ -58,11 +69,12 @@ async def test_pay_bike_success(monkeypatch):
             headers={"Authorization": "Bearer fake-token"}
         )
 
-    # 5. Assertions
-    # Status 200 is expected now that redirects are handled
+    # 6. Assertions
+    # If this fails with 422, check the response body for Pydantic validation errors
     assert response.status_code == status.HTTP_200_OK
 
     data = response.json()
     assert data["success"] is True
+    # The router wraps the tx_id in "transaction:{tx_id}"
     assert "mock-bike-tx-id" in data["message"]
     assert data["status"] == "PENDING"
