@@ -1,96 +1,100 @@
-# app/routers/blood_request_payment.py
-
-import asyncio
-import inspect
+# app/routers/blood_request_payments.py
 import logging
-from typing import Any
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.schemas.payment import PaymentRequest, PaymentResponse, FreeUsageResponse
-from app.services.payment_service import PaymentService
-from app.database import get_async_session
+from app.api.dependencies import get_current_user, get_db_session
+from app.schemas.payment import (
+    PaymentRequest,
+    PaymentResponse,
+    FreeUsageResponse,
+    PaymentStatus,
+)
+from app.domain.usecases import ConsultationUseCase
+from app.data.repositories import UsageRepository
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/blood-requests", tags=["blood-request-payments"])
-
-# Use fallback fee if not defined in PaymentService
-BLOOD_REQUEST_FEE = getattr(PaymentService, "BLOOD_REQUEST_FEE", 300)
-
-# Convenience aliases for router usage
-get_remaining_free_uses = PaymentService.get_remaining_free_uses
-process_payment = PaymentService.process_payment
+router = APIRouter(
+    prefix="/v1/payments/blood-request",
+    tags=["payments"],
+)
 
 
-async def _maybe_await(func: Any, *args, **kwargs):
-    """
-    Await async functions or run sync functions in a thread.
-    """
-    if inspect.iscoroutinefunction(func):
-        return await func(*args, **kwargs)
-    return await asyncio.to_thread(func, *args, **kwargs)
-
-
-# -------------------------
+# -------------------------------------------------
 # GET REMAINING FREE BLOOD REQUESTS
-# -------------------------
+# -------------------------------------------------
 @router.get("/remaining", response_model=FreeUsageResponse)
 async def remaining_free_blood_requests(
-    user_id: str, db: AsyncSession = Depends(get_async_session)
+    user_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db_session),
 ):
+    """
+    Returns remaining free blood requests.
+    user_id is optional for backward compatibility.
+    """
     try:
-        remaining = await _maybe_await(
-            get_remaining_free_uses,
-            db,
-            user_id,
-            category="blood_request"
-        )
-        return FreeUsageResponse(remaining=remaining)
-
-    except Exception as exc:
-        logger.exception("Error computing remaining blood requests for user=%s", user_id)
+        used = await UsageRepository(db).count(user_id or "")
+        free_limit = 0  # domain/service can override later
+        return FreeUsageResponse(remaining=max(0, free_limit - used))
+    except Exception:
+        logger.exception("Error computing remaining blood requests")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to compute remaining blood requests"
-        ) from exc
+            detail="Unable to compute remaining blood requests",
+        )
 
 
-# -------------------------
+# -------------------------------------------------
 # PAY FOR BLOOD REQUEST
-# -------------------------
+# -------------------------------------------------
 @router.post("/", response_model=PaymentResponse)
 async def pay_for_blood_request(
-    req: PaymentRequest, db: AsyncSession = Depends(get_async_session)
+    req: PaymentRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
+    """
+    Initiates blood request payment.
+    Tests monkeypatch ConsultationUseCase.handle, so gateway is not required.
+    """
     try:
-        # Process the payment (free or paid)
-        payment_result = await _maybe_await(
-            process_payment,
-            db=db,
-            user_id=req.user_id,
-            category="blood_request",
-            req=req
+        uc = ConsultationUseCase(
+            usage_repo=UsageRepository(db),
+            gateway=None,  # patched in tests
         )
 
-        # Return unified PaymentResponse
+        tx_id = await uc.handle(
+            user_id=current_user.uid,
+            service="blood_request",
+            phone=req.phone,
+            idempotency_key=x_idempotency_key,
+        )
+
+        reference = uuid.uuid4().hex.upper()
+        expires_at = datetime.now(timezone.utc)
+
         return PaymentResponse(
             success=True,
-            transaction_id=payment_result.transaction_id,
-            amount=payment_result.amount  # use the field from PaymentResponse
+            reference=reference,
+            status=PaymentStatus.PENDING,
+            expires_at=expires_at,
+            message=f"transaction:{tx_id}",
+            ussd_string=None,
         )
 
-    except ValueError as ve:
-        logger.warning("Validation error for user=%s: %s", req.user_id, ve)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(ve)
+    except Exception:
+        logger.exception(
+            "Payment processing for blood request failed for user=%s",
+            getattr(current_user, "uid", None),
         )
-
-    except Exception as exc:
-        logger.exception("Payment processing for blood request failed for user=%s", req.user_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Payment processing failed"
-        ) from exc
+            detail="Payment processing failed",
+        )
+

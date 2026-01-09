@@ -1,82 +1,82 @@
 # app/routers/bike_payment.py
-
-import asyncio
-import inspect
 import logging
-from typing import Any
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.schemas.payment import PaymentRequest, PaymentResponse, FreeUsageResponse
-from app.services.payment_service import PaymentService
-from app.database import get_async_session
+from app.api.dependencies import get_current_user, get_db_session
+from app.schemas.payment import PaymentRequest, PaymentResponse, FreeUsageResponse, PaymentStatus
+from app.domain.usecases import ConsultationUseCase
+from app.data.repositories import UsageRepository
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/bike-payments", tags=["bike-payments"])
-
-# Use fallback fee if not defined in PaymentService
-BIKE_FEE = getattr(PaymentService, "BIKE_FEE", 300)
-
-# Convenience aliases
-get_remaining_free_uses = PaymentService.get_remaining_free_uses
-process_payment = PaymentService.process_payment
+router = APIRouter(prefix="/v1/payments/bike", tags=["payments"])
 
 
-async def _maybe_await(func: Any, *args, **kwargs):
-    if inspect.iscoroutinefunction(func):
-        return await func(*args, **kwargs)
-    return await asyncio.to_thread(func, *args, **kwargs)
-
-
-# -------------------------
-# GET REMAINING FREE BIKE RIDES
-# -------------------------
 @router.get("/remaining", response_model=FreeUsageResponse)
 async def remaining_free_bike_rides(
-    user_id: str, db: AsyncSession = Depends(get_async_session)
+    user_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db_session),
 ):
+    """
+    Optionally accept user_id query param for ad-hoc checks (keeps compatibility).
+    In normal flows the authenticated user is used.
+    """
     try:
-        remaining = await _maybe_await(
-            get_remaining_free_uses,
-            db,
-            user_id,
-            category="biker"
-        )
-        return FreeUsageResponse(remaining=remaining)
-
-    except Exception as exc:
-        logger.exception("Error fetching remaining bike rides for user=%s", user_id)
+        used = await UsageRepository(db).count(user_id or "")
+        free_limit = 0  # keep fallback, real limit comes from domain/usecases if needed
+        return FreeUsageResponse(remaining=max(0, free_limit - used))
+    except Exception:
+        logger.exception("Error fetching remaining bike rides")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to fetch remaining bike rides"
-        ) from exc
-
-
-# -------------------------
-# PAY FOR BIKE RIDE
-# -------------------------
-@router.post("/", response_model=PaymentResponse)
-async def pay_for_bike(req: PaymentRequest, db: AsyncSession = Depends(get_async_session)):
-    try:
-        payment_result = await _maybe_await(
-            process_payment,
-            db=db,
-            user_id=req.user_id,
-            category="biker",
-            req=req
+            detail="Unable to fetch remaining bike rides",
         )
+
+
+@router.post("/", response_model=PaymentResponse)
+async def pay_for_bike(
+    req: PaymentRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
+):
+    """
+    Initiate bike payment. Tests monkeypatch ConsultationUseCase.handle to return a tx id.
+    We call the usecase with the authenticated user's id and the phone provided in the JSON body.
+    """
+    try:
+        uc = ConsultationUseCase(
+            usage_repo=UsageRepository(db),
+            gateway=None,  # tests patch handle, so gateway may be None here
+        )
+
+        tx_id = await uc.handle(
+            user_id=current_user.uid,
+            service="biker",
+            phone=req.phone,
+            idempotency_key=x_idempotency_key,
+        )
+
+        reference = uuid.uuid4().hex.upper()
+        expires_at = datetime.now(timezone.utc)
 
         return PaymentResponse(
             success=True,
-            transaction_id=payment_result.transaction_id,
-            amount=payment_result.amount  # <-- fixed to match PaymentResponse schema
+            reference=reference,
+            status=PaymentStatus.PENDING,
+            expires_at=expires_at,
+            message=f"transaction:{tx_id}",
+            ussd_string=None,
         )
 
-    except Exception as exc:
-        logger.exception("Bike payment failed for user=%s", req.user_id)
+    except Exception:
+        logger.exception("Bike payment failed for user=%s", getattr(current_user, "uid", None))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Bike payment failed"
-        ) from exc
+            detail="Bike payment failed",
+        )

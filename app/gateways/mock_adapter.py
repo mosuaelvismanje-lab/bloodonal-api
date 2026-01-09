@@ -1,5 +1,5 @@
-#app/gateways/mock_adapter
 import uuid
+import asyncio
 import logging
 from typing import Optional
 from app.domain.interfaces import IPaymentGateway
@@ -11,10 +11,16 @@ class MockAdapter(IPaymentGateway):
     """
     Fake payment gateway for development and unit tests.
 
-    Supports BOTH:
-    - Tests: charge(user_id, amount)
-    - Production: charge(phone, amount, description)
+    Supports:
+    - Unit tests → charge(user_id, amount)
+    - App logic → charge(phone, amount, description)
+
+    Keeps an in-memory transaction registry so verify() behaves correctly.
     """
+
+    def __init__(self):
+        # In-memory transaction registry (safe for tests)
+        self._tx_store: set[str] = set()
 
     async def charge(
         self,
@@ -28,30 +34,51 @@ class MockAdapter(IPaymentGateway):
         Simulates a mobile money charge.
 
         Rules:
-        - If phone == "000000000", simulate failure
-        - If user_id is provided (tests), generate tx using user_id
+        - If user_id is provided → test mode
+        - If phone == "000000000" → simulate failure
         """
 
-        # ✅ Test mode (used by pytest)
-        if user_id:
-            logger.info(f"[MOCK PAYMENT][TEST] Charging {amount} XAF for user {user_id}")
-            return f"mock-{user_id}-{uuid.uuid4().hex[:8]}"
+        # simulate async network delay
+        await asyncio.sleep(0)
 
-        # ✅ Production mode
+        # ✅ Test mode (pytest, services)
+        if user_id:
+            tx = f"mock-{user_id}-{uuid.uuid4().hex[:12]}"
+            self._tx_store.add(tx)
+            logger.debug("[MOCK][TEST] charge -> %s", tx)
+            return tx
+
+        # ✅ Production / app mode
         if not phone:
             raise ValueError("phone is required when user_id is not provided")
-
-        logger.info(
-            f"[MOCK PAYMENT] Charging {amount} XAF to {phone} for '{description}'"
-        )
 
         if phone == "000000000":
             raise ValueError("Insufficient funds in mock wallet.")
 
-        return f"mock-{phone}-{uuid.uuid4().hex[:8]}"
+        tx = f"mock-{phone}-{uuid.uuid4().hex[:12]}"
+        self._tx_store.add(tx)
 
-    async def verify(self, provider_tx_id: str) -> str:
+        logger.debug(
+            "[MOCK] Charging %s XAF to %s (%s) -> %s",
+            amount,
+            phone,
+            description,
+            tx,
+        )
+
+        return tx
+
+    async def verify(self, provider_tx_id: str) -> bool:
         """
-        Simulates verification of a transaction.
+        Verifies a previously generated transaction.
+
+        Returns:
+        - True → transaction exists
+        - False → unknown transaction
         """
-        return "success" if provider_tx_id.startswith("mock-") else "failed"
+
+        await asyncio.sleep(0)
+        result = provider_tx_id in self._tx_store
+        logger.debug("[MOCK] verify %s -> %s", provider_tx_id, result)
+        return bool(result)
+

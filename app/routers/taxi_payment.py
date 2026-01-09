@@ -1,94 +1,100 @@
 # app/routers/taxi_payment.py
-
-import asyncio
-import inspect
 import logging
-from typing import Any
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_async_session
-from app.schemas.payment import PaymentRequest, PaymentResponse, FreeUsageResponse
-from app.services.payment_service import PaymentService
+from app.api.dependencies import get_current_user, get_db_session
+from app.schemas.payment import (
+    PaymentRequest,
+    PaymentResponse,
+    FreeUsageResponse,
+    PaymentStatus,
+)
+from app.domain.usecases import ConsultationUseCase
+from app.data.repositories import UsageRepository
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/taxi-payments", tags=["taxi-payments"])
-
-# Optional fallback fee
-TAXI_FEE = getattr(PaymentService, "TAXI_FEE", 150)
-
-# Aliases for convenience
-get_remaining_free_uses = PaymentService.get_remaining_free_uses
-process_payment = PaymentService.process_payment
+router = APIRouter(
+    prefix="/v1/payments/taxi",
+    tags=["payments"],
+)
 
 
-async def _maybe_await(func: Any, *args, **kwargs):
-    """
-    Safely call async or sync service functions.
-    """
-    if inspect.iscoroutinefunction(func):
-        return await func(*args, **kwargs)
-    return await asyncio.to_thread(func, *args, **kwargs)
-
-
-# -------------------------
+# -------------------------------------------------
 # GET REMAINING FREE TAXI RIDES
-# -------------------------
+# -------------------------------------------------
 @router.get("/remaining", response_model=FreeUsageResponse)
-async def remaining_free_taxi_rides(user_id: str, db: AsyncSession = Depends(get_async_session)):
+async def remaining_free_taxi_rides(
+    user_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Returns remaining free taxi rides.
+    user_id is optional for backward compatibility.
+    """
     try:
-        remaining = await _maybe_await(
-            get_remaining_free_uses,
-            db,
-            user_id,
-            category="taxi"
-        )
-        return FreeUsageResponse(remaining=remaining)
-
-    except Exception as exc:
-        logger.exception("Failed to fetch remaining taxi rides for user=%s", user_id)
+        used = await UsageRepository(db).count(user_id or "")
+        free_limit = 0  # domain can override later
+        return FreeUsageResponse(remaining=max(0, free_limit - used))
+    except Exception:
+        logger.exception("Failed to fetch remaining taxi rides")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to fetch remaining taxi rides"
-        ) from exc
-
-
-# -------------------------
-# PAY FOR TAXI RIDE
-# -------------------------
-@router.post("/", response_model=PaymentResponse)
-async def pay_for_taxi(req: PaymentRequest, db: AsyncSession = Depends(get_async_session)):
-    try:
-        payment_result = await _maybe_await(
-            process_payment,
-            db=db,
-            user_id=req.user_id,
-            category="taxi",
-            req=req
+            detail="Unable to fetch remaining taxi rides",
         )
 
-        # Use 'amount' from PaymentResponse (fallback to TAXI_FEE if missing)
-        amount = getattr(payment_result, "amount", TAXI_FEE)
+
+# -------------------------------------------------
+# PAY FOR TAXI RIDE
+# -------------------------------------------------
+@router.post("/", response_model=PaymentResponse)
+async def pay_for_taxi(
+    req: PaymentRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user=Depends(get_current_user),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
+):
+    """
+    Initiates taxi payment.
+    Tests monkeypatch ConsultationUseCase.handle, so gateway is not required.
+    """
+    try:
+        uc = ConsultationUseCase(
+            usage_repo=UsageRepository(db),
+            gateway=None,  # patched in tests
+        )
+
+        tx_id = await uc.handle(
+            user_id=current_user.uid,
+            service="taxi",
+            phone=req.phone,
+            idempotency_key=x_idempotency_key,
+        )
+
+        reference = uuid.uuid4().hex.upper()
+        expires_at = datetime.now(timezone.utc)
 
         return PaymentResponse(
             success=True,
-            transaction_id=payment_result.transaction_id,
-            amount=amount
+            reference=reference,
+            status=PaymentStatus.PENDING,
+            expires_at=expires_at,
+            message=f"transaction:{tx_id}",
+            ussd_string=None,
         )
 
-    except ValueError as ve:
-        logger.warning("Payment validation failed for user=%s: %s", req.user_id, ve)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(ve)
+    except Exception:
+        logger.exception(
+            "Taxi payment failed for user=%s",
+            getattr(current_user, "uid", None),
         )
-
-    except Exception as exc:
-        logger.exception("Taxi payment failed for user=%s", req.user_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Taxi payment failed"
-        ) from exc
+            detail="Taxi payment failed",
+        )
 

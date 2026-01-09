@@ -13,7 +13,7 @@ class PaymentStatus(str, Enum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     REFUNDED = "REFUNDED"
-    AWAITING_VERIFICATION = "AWAITING_VERIFICATION"  # <-- New
+    AWAITING_VERIFICATION = "AWAITING_VERIFICATION"
 
 
 # ----------------------------
@@ -52,7 +52,8 @@ class PaymentResponse(BaseModel):
     expires_at: datetime
     message: Optional[str] = None
     ussd_string: Optional[str] = Field(
-        None, description="Hidden USSD string for the app to dial"
+        None,
+        description="Hidden USSD string for the app to dial"
     )
 
 
@@ -60,6 +61,10 @@ class PaymentResponse(BaseModel):
 # Free Usage Check Response
 # ----------------------------
 class FreeUsageResponse(BaseModel):
+    """
+    Used for checking remaining free usage.
+    """
+
     remaining: int = Field(
         ...,
         description="How many free actions the user can still perform"
@@ -86,7 +91,7 @@ class PaymentItem(BaseModel):
     provider: str
     provider_tx_id: Optional[str] = None
 
-    status: PaymentStatus  # <-- now includes AWAITING_VERIFICATION
+    status: PaymentStatus
     expires_at: datetime
     confirmed_at: Optional[datetime] = None
 
@@ -105,3 +110,4 @@ class PaymentListResponse(BaseModel):
     limit: int
     offset: int
     items: List[PaymentItem]
+
