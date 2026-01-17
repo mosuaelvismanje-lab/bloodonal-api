@@ -4,7 +4,7 @@ from app.models.healthcare_provider import HealthcareProvider
 from app.schemas.healthcare_requests import HealthcareRequestCreate
 
 def create_healthcare_request(db: Session, req: HealthcareRequestCreate):
-    obj = HealthcareRequest(**req.dict())
+    obj = HealthcareRequest(**req.model_dump())
     db.add(obj)
     db.commit()
     db.refresh(obj)

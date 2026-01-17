@@ -47,7 +47,7 @@ class MTNMomoPaymentGateway(IPaymentGateway):
         return {
             "status": "pending",
             "provider_ref": reference,
-            "raw": resp.json() if resp.content else {},
+            "raw": resp.model_dump_json() if resp.content else {},
         }
 
     async def verify(self, tx_id: str) -> bool:

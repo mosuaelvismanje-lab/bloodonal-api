@@ -76,7 +76,7 @@ async def get_one(provider_id: int, db: AsyncSession = Depends(get_async_session
 #  UPDATE
 @router.put("/{provider_id}", response_model=HealthcareProvider)
 async def update(provider_id: int, data: HealthcareProviderUpdate, db: AsyncSession = Depends(get_async_session)):
-    updated = await _maybe_await_with_session(update_provider, db, provider_id, data.dict(exclude_unset=True))
+    updated = await _maybe_await_with_session(update_provider, db, provider_id, data.model_dump(exclude_unset=True))
     if not updated:
         raise HTTPException(status_code=404, detail="Provider not found")
     return updated

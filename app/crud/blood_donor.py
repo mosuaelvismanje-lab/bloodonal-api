@@ -12,7 +12,7 @@ def create_donor(db: Session, donor: BloodDonorCreate) -> BloodDonor:
     Create a new BloodDonor record.
     Raises IntegrityError if, e.g., phone uniqueness is violated.
     """
-    payload = donor.model_dump() if hasattr(donor, "model_dump") else donor.dict()
+    payload = donor.model_dump() if hasattr(donor, "model_dump") else donor.model_dump()
     obj = BloodDonor(**payload)
     db.add(obj)
     try:
@@ -48,7 +48,7 @@ def update_donor(db: Session, donor_id: int, donor_update: BloodDonorUpdate) -> 
     data = (
         donor_update.model_dump(exclude_unset=True)
         if hasattr(donor_update, "model_dump")
-        else donor_update.dict(exclude_unset=True)
+        else donor_update.model_dump(exclude_unset=True)
     )
     for field, value in data.items():
         setattr(donor, field, value)

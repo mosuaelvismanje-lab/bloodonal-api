@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict # ✅ Added ConfigDict
 from typing import Optional, Dict, List
 from datetime import datetime
 from enum import Enum
@@ -24,6 +24,7 @@ class PaymentRequest(BaseModel):
     Used when a user initiates a payment.
     Amount is derived from service unless overridden internally.
     """
+    model_config = ConfigDict(from_attributes=True)
 
     phone: str = Field(
         ...,
@@ -43,8 +44,8 @@ class PaymentRequest(BaseModel):
 class PaymentResponse(BaseModel):
     """
     Returned immediately after payment initiation.
-    Payment is usually PENDING until admin confirms.
     """
+    model_config = ConfigDict(from_attributes=True)
 
     success: bool
     reference: str = Field(..., description="Payment reference shown to admin")
@@ -64,6 +65,7 @@ class FreeUsageResponse(BaseModel):
     """
     Used for checking remaining free usage.
     """
+    model_config = ConfigDict(from_attributes=True)
 
     remaining: int = Field(
         ...,
@@ -78,6 +80,8 @@ class PaymentItem(BaseModel):
     """
     Single payment row for admin dashboard.
     """
+    # ✅ Fixed: Changed class Config to model_config
+    model_config = ConfigDict(from_attributes=True)
 
     id: str
     reference: str
@@ -97,17 +101,14 @@ class PaymentItem(BaseModel):
 
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 class PaymentListResponse(BaseModel):
     """
     Paginated dashboard response.
     """
+    model_config = ConfigDict(from_attributes=True)
 
     total: int
     limit: int
     offset: int
     items: List[PaymentItem]
-

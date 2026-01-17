@@ -4,7 +4,7 @@ from app.models.transport_offer import TransportOffer
 from app.schemas.transport_offered import TransportOfferCreate
 
 def create_transport_offer(db: Session, offer: TransportOfferCreate):
-    obj = TransportOffer(**offer.dict())
+    obj = TransportOffer(**offer.model_dump())
     db.add(obj)
     db.commit()
     db.refresh(obj)

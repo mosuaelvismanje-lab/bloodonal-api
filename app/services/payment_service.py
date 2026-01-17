@@ -10,7 +10,6 @@ from app.database import get_free_usage_count, increment_usage_count
 from app.models.payment import Payment, PaymentStatus
 from app.schemas.payment import PaymentResponse
 
-
 # ======================================================
 # CONFIGURATION
 # ======================================================
@@ -73,17 +72,14 @@ def generate_ussd(gateway: str, amount: float) -> str:
 
 class PaymentService:
     """
-    Unified payment service supporting:
-    • Free usage
-    • Paid USSD (MTN / ORANGE)
-    • Schema-compliant responses for Bike/Doctor/Nurse
+    Unified payment service optimized for Pydantic V2.
     """
 
     @staticmethod
     async def get_remaining_free_uses(
-        db: AsyncSession,
-        user_id: str,
-        category: str,
+            db: AsyncSession,
+            user_id: str,
+            category: str,
     ) -> int:
         used = await get_free_usage_count(db, user_id, category)
         limit = FREE_LIMITS.get(category, 0)
@@ -91,16 +87,16 @@ class PaymentService:
 
     @staticmethod
     async def process_payment(
-        db: AsyncSession,
-        *,
-        user_id: str,
-        user_phone: str,
-        category: str,
-        gateway: Optional[str] = "MTN",
-        req_data: Union[Dict, object],
+            db: AsyncSession,
+            *,
+            user_id: str,
+            user_phone: str,
+            category: str,
+            gateway: Optional[str] = "MTN",
+            req_data: Union[Dict, object],
     ) -> PaymentResponse:
         """
-        Processes payment and returns a response compliant with PaymentResponse schema.
+        Processes payment using model_validate for cleaner mapping.
         """
 
         # Extract metadata
@@ -110,15 +106,9 @@ class PaymentService:
             else req_data.get("metadata")
         )
 
-        # Step 1: free usage check
-        free_left = await PaymentService.get_remaining_free_uses(
-            db, user_id, category
-        )
-
-        # Step 2: determine expiration
+        free_left = await PaymentService.get_remaining_free_uses(db, user_id, category)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=PAYMENT_TIMEOUT_MINUTES)
 
-        # Step 3: check if service is blood request (always free)
         is_blood = (category == "blood_request")
         final_amount = 0 if (free_left > 0 or is_blood) else BASE_FEE.get(category, 0)
 
@@ -129,15 +119,15 @@ class PaymentService:
             await increment_usage_count(db, user_id, category)
             ref = f"FREE-{uuid.uuid4().hex[:8].upper()}"
 
-            return PaymentResponse(
-                success=True,
-                status=PaymentStatus.COMPLETED,
-                message="Free usage applied successfully",
-                transaction_id=ref,
-                reference=ref,  # Added for new schema compliance
-                ussd_code=None,
-                expires_at=expires_at  # Added for new schema compliance
-            )
+            # ✅ Use dictionary with model_validate for dict -> schema
+            return PaymentResponse.model_validate({
+                "success": True,
+                "status": PaymentStatus.SUCCESS,
+                "message": "Free usage applied successfully",
+                "reference": ref,
+                "expires_at": expires_at,
+                "ussd_string": None
+            })
 
         # -------------------------
         # PAID FLOW (USSD)
@@ -147,6 +137,7 @@ class PaymentService:
         signature = generate_signature(reference, final_amount, user_phone)
         ussd_code = generate_ussd(active_gateway, final_amount)
 
+        # Create the SQLAlchemy model instance
         payment = Payment(
             reference=reference,
             user_id=user_id,
@@ -158,9 +149,10 @@ class PaymentService:
             signature=signature,
             status=PaymentStatus.PENDING,
             idempotency_key=reference,
+            # Ensure these fields exist on your model to take full advantage of mapping
+            ussd_string=ussd_code,
+            expires_at=expires_at,
             metadata_json={
-                "ussd": ussd_code,
-                "expires_at": expires_at.isoformat(),
                 "extra": metadata,
             },
         )
@@ -168,15 +160,14 @@ class PaymentService:
         db.add(payment)
         await db.commit()
 
-        return PaymentResponse(
-            success=True,
-            status=PaymentStatus.PENDING,
-            transaction_id=reference,
-            reference=reference, # Explicitly mapped for BikePaymentResponse
-            ussd_code=ussd_code,
-            expires_at=expires_at,
-            message="Please dial the USSD code on your phone to complete payment"
-        )
+        # ✅ CRITICAL V2 UPDATE:
+        # We load the DB object directly into the schema.
+        # Then we add the 'success' and 'message' fields which are logic-specific.
+        response = PaymentResponse.model_validate(payment)
+        response.success = True
+        response.message = "Please dial the USSD code on your phone to complete payment"
+
+        return response
 
 
 # ======================================================

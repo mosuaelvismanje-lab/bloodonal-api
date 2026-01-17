@@ -44,7 +44,7 @@ async def ws_chat(room_id: int, websocket: WebSocket):
                 # create_message should be async and accept session
                 msg_in = MessageCreate(room_id=room_id, **data)
                 msg = await create_message(session, msg_in)
-                out = MessageOut.from_orm(msg).model_dump()
+                out = MessageOut.model_validate(msg).model_dump()
                 await manager.broadcast(room_id, out)
     except WebSocketDisconnect:
         manager.disconnect(room_id, websocket)

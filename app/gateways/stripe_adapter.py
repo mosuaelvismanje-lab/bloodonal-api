@@ -49,7 +49,7 @@ class StripeAdapter(IPaymentGateway):
         if resp.status_code >= 400:
             raise Exception(f"Stripe charge failed: {resp.status_code} - {resp.text}")
 
-        data = resp.json()
+        data = resp.model_dump_json()
         provider_id = data.get("id")
 
         if not provider_id:

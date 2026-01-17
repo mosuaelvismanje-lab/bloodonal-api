@@ -4,20 +4,21 @@ from datetime import datetime
 
 
 class CallRequestPayload(BaseModel):
-    # Use model_config instead of class Config
-    model_config = ConfigDict(populate_by_name=True)
+    # ✅ Corrected: Fixed warnings and enabled alias population
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
     caller_id: str = Field(..., alias="caller_id")
     callee_id: Optional[str] = Field(None, alias="callee_id")
     recipient_ids: Optional[List[str]] = Field(None, alias="recipient_ids")
     callee_type: Optional[str] = Field(None, alias="callee_type")
     call_mode: Optional[str] = Field("video", alias="call_mode")
-
-    # Renamed to match your SQLAlchemy model fix
     session_metadata: Optional[Dict[str, Any]] = Field(None, alias="metadata")
 
 
 class InitiateCallRequest(BaseModel):
+    # ✅ Added: Missing config triggers warnings in some Pydantic versions
+    model_config = ConfigDict(populate_by_name=True)
+
     caller_id: str
     recipient_ids: Optional[List[str]] = None
     callee_type: Optional[str] = None
@@ -26,13 +27,16 @@ class InitiateCallRequest(BaseModel):
 
 
 class EndCallRequest(BaseModel):
+    # ✅ Added: Consistency across all schemas
+    model_config = ConfigDict(from_attributes=True)
+
     session_id: str
     reason: Optional[str] = None
     ended_by: Optional[str] = None
 
 
 class SessionResponse(BaseModel):
-    # orm_mode is now from_attributes
+    # ✅ Already correct: Good job!
     model_config = ConfigDict(from_attributes=True)
 
     session_id: str

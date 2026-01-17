@@ -1,8 +1,10 @@
-# File: app/models/doctor.py
 from sqlalchemy import Column, String, Boolean
-from sqlalchemy.ext.declarative import declarative_base
+# ✅ REMOVED: from sqlalchemy.ext.declarative import declarative_base
+# ✅ REMOVED: Base = declarative_base()
 
-Base = declarative_base()
+# ✅ ADDED: Use the central Base from your database config
+# This ensures SQLAlchemy sees this model when you run migrations or init_db()
+from app.database import Base
 
 class Doctor(Base):
     __tablename__ = "doctors"

@@ -34,7 +34,7 @@ async def get_donor(donor_id: int, db: AsyncSession = Depends(get_async_session)
 
 @router.post("/", response_model=BloodDonorOut, status_code=status.HTTP_201_CREATED)
 async def create_donor(donor_in: BloodDonorCreate, db: AsyncSession = Depends(get_async_session)):
-    data = donor_in.model_dump() if hasattr(donor_in, "model_dump") else donor_in.dict()
+    data = donor_in.model_dump() if hasattr(donor_in, "model_dump") else donor_in.model_dump()
     new = BloodDonorModel(**data)
     db.add(new)
     try:
@@ -54,7 +54,7 @@ async def update_donor(donor_id: int, donor_in: BloodDonorUpdate, db: AsyncSessi
     if not donor:
         raise HTTPException(status_code=404, detail="Donor not found")
 
-    data = donor_in.model_dump(exclude_unset=True) if hasattr(donor_in, "model_dump") else donor_in.dict(exclude_unset=True)
+    data = donor_in.model_dump(exclude_unset=True) if hasattr(donor_in, "model_dump") else donor_in.model_dump(exclude_unset=True)
     for field, value in data.items():
         setattr(donor, field, value)
     db.add(donor)

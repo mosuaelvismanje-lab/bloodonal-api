@@ -105,7 +105,7 @@ async def send_push(
         return result
     except Exception as exc:
         logger.exception(
-            "Failed to send push notification to payload=%s", payload.dict()
+            "Failed to send push notification to payload=%s", payload.model_dump()
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

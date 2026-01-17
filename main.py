@@ -18,7 +18,6 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import Base  # ensures models are imported for Alembic (no side-effects)
 from app.db.session import get_db  # dependency that yields AsyncSession (async SQLAlchemy)
-# NOTE: app.db.session must create the async engine and AsyncSessionLocal
 
 # -------------------------
 # Logging
@@ -71,20 +70,17 @@ def init_firebase() -> bool:
     cred = None
     source = "unknown"
 
-    # 1) GOOGLE_APPLICATION_CREDENTIALS path
     gac_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if gac_path and os.path.exists(gac_path):
         cred = credentials.Certificate(gac_path)
         source = f"GOOGLE_APPLICATION_CREDENTIALS from path: {gac_path}"
 
-    # 2) Render / container secret file path
     render_secret_path = "/etc/secrets/FIREBASE_CREDENTIALS_JSON"
     if not cred and os.path.exists(render_secret_path):
         cred = credentials.Certificate(render_secret_path)
         source = f"Render secret file: {render_secret_path}"
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = render_secret_path
 
-    # 3) Explicit env var with JSON content
     env_json = os.environ.get("FIREBASE_CREDENTIALS_JSON")
     if not cred and env_json:
         path = _write_temp_json(env_json)
@@ -92,7 +88,6 @@ def init_firebase() -> bool:
         source = "FIREBASE_CREDENTIALS_JSON env content"
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
 
-    # 4) Base64-encoded env var
     if not cred and os.environ.get("FIREBASE_CRED_BASE64"):
         path = _write_temp_base64(os.environ["FIREBASE_CRED_BASE64"])
         cred = credentials.Certificate(path)
@@ -106,7 +101,6 @@ def init_firebase() -> bool:
             _cleanup_firebase_temp_files()
             return True
         except ValueError as e:
-            # default app exists
             if "The default Firebase app already exists." in str(e):
                 log.info("Firebase already initialized, skipping.")
                 _cleanup_firebase_temp_files()
@@ -125,7 +119,6 @@ def init_firebase() -> bool:
 # -------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # initialize firebase (if possible)
     firebase_ready = init_firebase()
     log.info("Lifespan startup complete (firebase_ready=%s)", firebase_ready)
     yield
@@ -149,7 +142,6 @@ app = FastAPI(
 # -------------------------
 origins_raw = os.getenv("ALLOWED_ORIGINS") or settings.ALLOWED_ORIGINS or ""
 if isinstance(origins_raw, str) and origins_raw.strip():
-    # allow comma-separated entries in env
     allowed = [o.strip() for o in origins_raw.split(",") if o.strip()]
 else:
     allowed = ["http://localhost"]
@@ -176,17 +168,16 @@ from app.routers import (
     chat,
     notifications,
     consultation,
+    bike_payment,  # ✅ ADDED: Import bike router
 )
 
-# API / payment & admin dashboards (new structure)
-# payments router is under app.api.routers.payments (or app.api.routers)
+# API / payment & admin dashboards
 try:
     from app.api.routers import payments as payments_module
     payments_router = getattr(payments_module, "router", None) or payments_module.router
 except Exception:
     payments_router = None
 
-# Admin and dashboard (app.api.admin, app.api.dashboard)
 try:
     from app.api.admin import router as admin_router
 except Exception:
@@ -209,10 +200,10 @@ api_router.include_router(transport_request.router)
 api_router.include_router(chat.router)
 api_router.include_router(notifications.router)
 api_router.include_router(consultation.router)
+api_router.include_router(bike_payment.router) # ✅ ADDED: Register bike router here
 
 app.include_router(api_router)
 
-# include payments/admin/dashboard if available
 if payments_router:
     app.include_router(payments_router)
 if admin_router:
@@ -221,10 +212,8 @@ if dashboard_router:
     app.include_router(dashboard_router)
 
 # -------------------------
-# DB dependency (exposed here for quick usage)
+# DB dependency
 # -------------------------
-# Prefer importing get_db from app.db.session across the project.
-# This is provided so routes can do: session: AsyncSession = Depends(get_db)
 def get_db_dependency():
     return get_db
 
@@ -238,7 +227,6 @@ async def root():
 @app.get("/firebase-test", tags=["health"])
 async def firebase_test():
     try:
-        # will raise if firebase not initialized
         db = firestore.client()
         collections = [c.id for c in db.collections()]
         return {"collections": collections}
@@ -247,18 +235,14 @@ async def firebase_test():
 
 @app.get("/db-test", tags=["health"])
 async def db_test_route(session = Depends(get_db)):
-    """
-    Simple DB connectivity test. Uses get_db from app.db.session.
-    """
     try:
-        # raw SQL test (should work with async engine)
         result = await session.execute(text("SELECT 1 as is_connected"))
         return {"message": "PostgreSQL connection successful!", "result": int(result.scalar_one())}
     except Exception as e:
         return {"error": f"Database query failed: {e}"}
 
 # -------------------------
-# Simple call/session endpoints (example)
+# Simple call/session endpoints
 # -------------------------
 call_router = APIRouter(prefix="/calls", tags=["calls"])
 
@@ -268,7 +252,7 @@ class CallRequestPayload(BaseModel):
     caller_id: str
     callee_id: str
     callee_type: str
-    call_mode: str  # VOICE or VIDEO
+    call_mode: str
 
 class SessionResponse(BaseModel):
     session_id: str
@@ -300,7 +284,3 @@ async def end_call(request: EndCallRequest):
     return {"success": True, "message": f"Call {request.session_id} ended."}
 
 app.include_router(call_router)
-
-# -------------------------
-# Nothing to run at import time (no uvicorn.run)
-# -------------------------

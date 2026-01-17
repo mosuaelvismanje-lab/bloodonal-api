@@ -7,34 +7,48 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, get_db_session
-# ✅ UPDATE: Import the new specific bike schemas
 from app.schemas.bike_payment import BikePaymentRequest, BikePaymentResponse, BikeFreeUsageResponse
-# Keep PaymentStatus for logic consistency
 from app.schemas.payment import PaymentStatus
 from app.domain.usecases import ConsultationUseCase
 from app.data.repositories import UsageRepository
 from app.services.payment_service import PaymentService
+from app.domain.consultation_models import ChannelType, UserRoles
 
+# -------------------------
+# Logger Configuration
+# -------------------------
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/payments/bike", tags=["payments"])
+# -------------------------
+# Router Configuration
+# -------------------------
+router = APIRouter(
+    prefix="/payments/bike",
+    tags=["payments"],
+    redirect_slashes=False
+)
 
 
 # -------------------------
 # GET REMAINING FREE BIKE RIDES
 # -------------------------
-@router.get("/remaining", response_model=BikeFreeUsageResponse) # ✅ Updated response model
+@router.get("/remaining", response_model=BikeFreeUsageResponse)
 async def remaining_free_bike_rides(
         user_id: Optional[str] = None,
         db: AsyncSession = Depends(get_db_session),
 ):
     """
-    Fetch remaining free rides using the specific BikeFreeUsageResponse schema.
+    Check remaining free bike rides for a user.
     """
     try:
-        # Assuming UsageRepository has a count method
-        used = await UsageRepository(db).count(user_id or "")
+        # ✅ FIX: Added "bike" as the second positional argument (service)
+        # to match the UsageRepository.count() signature
+        repo = UsageRepository(db)
+        used = await repo.count(user_id or "", "bike")
+
+        # Define your business logic for free limits here
         free_limit = 0
+
         return BikeFreeUsageResponse(remaining=max(0, free_limit - used))
     except Exception:
         logger.exception("Error fetching remaining bike rides")
@@ -47,43 +61,40 @@ async def remaining_free_bike_rides(
 # -------------------------
 # PAY FOR BIKE RIDE
 # -------------------------
-@router.post("/", response_model=BikePaymentResponse) # ✅ Updated response model
+@router.post("", response_model=BikePaymentResponse)
 async def pay_for_bike(
-        req: BikePaymentRequest, # ✅ Updated request model (enforces 9-digit phone)
+        req: BikePaymentRequest,
         db: AsyncSession = Depends(get_db_session),
         current_user=Depends(get_current_user),
-        x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
+        x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
 ):
     """
-    Initiate bike payment.
-    Matches ConsultationUseCase(usage_repo, payment_gateway, call_gateway, chat_gateway)
+    Initiate bike payment via ConsultationUseCase.
     """
     try:
-        # ✅ FIX: Match the 4-argument constructor in your usecase
         uc = ConsultationUseCase(
-            usage_repo=UsageRepository(db),
-            payment_gateway=None,
-            call_gateway=None,
-            chat_gateway=None
+            UsageRepository(db),
+            None,  # payment_gateway
+            None,  # call_gateway
+            None  # chat_gateway
         )
 
-        # ✅ Call handle with correct arguments
-        tx_id = await uc.handle(
-            user_id=current_user.uid,
-            service="biker",
-            phone=req.phone,
+        result = await uc.handle(
+            caller_id=current_user.uid,
+            recipient_id="BIKE_SERVICE_PROVIDER",
+            caller_phone=req.phone,
+            channel=ChannelType.VOICE,
+            recipient_role=UserRoles.DOCTOR,
             idempotency_key=x_idempotency_key,
         )
 
-        reference = uuid.uuid4().hex.upper()
-        expires_at = datetime.now(timezone.utc)
+        tx_id = getattr(result, 'transaction_id', result)
 
-        # ✅ Returns specifically structured BikePaymentResponse
         return BikePaymentResponse(
             success=True,
-            reference=reference,
+            reference=uuid.uuid4().hex.upper(),
             status=PaymentStatus.PENDING,
-            expires_at=expires_at,
+            expires_at=datetime.now(timezone.utc),
             message=f"transaction:{tx_id}",
             ussd_string=None,
         )
@@ -97,7 +108,7 @@ async def pay_for_bike(
 
 
 # -------------------------
-# Export service aliases for central router / tests
+# Service Aliases
 # -------------------------
 get_remaining_free_uses = PaymentService.get_remaining_free_uses
 process_payment = PaymentService.process_payment

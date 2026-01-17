@@ -1,15 +1,20 @@
 import enum
 from datetime import datetime
+from typing import Optional, Any, List
+
 from sqlalchemy import (
-    Column, Integer, String, DateTime, Enum as SAEnum, JSON, func
+    String,
+    DateTime,
+    Enum as SAEnum,
+    JSON,
+    func,
+    Integer  # ✅ Added missing import
 )
-# 1. Use the modern DeclarativeBase import
-from sqlalchemy.orm import DeclarativeBase
+# Modern SQLAlchemy 2.0 Mapped types
+from sqlalchemy.orm import Mapped, mapped_column
 
-
-# 2. Modern SQLAlchemy 2.0 Base class
-class Base(DeclarativeBase):
-    pass
+# Import the shared Base from your central database config
+from app.database import Base
 
 
 class CallMode(str, enum.Enum):
@@ -28,22 +33,48 @@ class CallStatus(str, enum.Enum):
 class CallSession(Base):
     __tablename__ = "call_sessions"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    session_id = Column(String(64), unique=True, index=True, nullable=False)
-    room_name = Column(String(255), nullable=False, index=True)
-    caller_id = Column(String(128), nullable=False, index=True)
-    callee_ids = Column(JSON, nullable=True)
-    callee_type = Column(String(64), nullable=True)
+    # ✅ id now uses the imported Integer type
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, autoincrement=True)
 
-    # Using native_enum=False makes migrations easier across different DB types
-    call_mode = Column(SAEnum(CallMode, native_enum=False), nullable=False, default=CallMode.VOICE)
-    status = Column(SAEnum(CallStatus, native_enum=False), nullable=False, default=CallStatus.PENDING)
+    session_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    room_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    caller_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
 
-    token = Column(String(255), nullable=True)
-    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
-    ended_at = Column(DateTime(timezone=True), nullable=True)
+    callee_ids: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    callee_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
-    # SUCCESS: You renamed this to session_metadata
-    session_metadata = Column(JSON, nullable=True)
+    call_mode: Mapped[CallMode] = mapped_column(
+        SAEnum(CallMode, native_enum=False),
+        nullable=False,
+        default=CallMode.VOICE
+    )
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    status: Mapped[CallStatus] = mapped_column(
+        SAEnum(CallStatus, native_enum=False),
+        nullable=False,
+        default=CallStatus.PENDING
+    )
+
+    token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=True
+    )
+
+    ended_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+
+    session_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<CallSession(id={self.id}, session_id={self.session_id}, status={self.status})>"

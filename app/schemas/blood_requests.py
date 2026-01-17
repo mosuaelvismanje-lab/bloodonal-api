@@ -1,8 +1,11 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict # ✅ Added ConfigDict
 from typing import Optional
 
 class BloodRequestBase(BaseModel):
+    # ✅ Set config at the base level so all children inherit it
+    model_config = ConfigDict(from_attributes=True)
+
     requester_name: str
     city: str
     phone: str
@@ -19,6 +22,4 @@ class BloodRequestCreate(BloodRequestBase):
 class BloodRequest(BloodRequestBase):
     id: int
     created_at: datetime
-
-    class Config:
-        from_attributes = True  # For ORM-to-Pydantic support
+    # ❌ REMOVED: class Config: from_attributes = True

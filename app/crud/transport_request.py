@@ -4,7 +4,7 @@ from app.models.transport_request import TransportRequest
 from app.schemas.transport_request import TransportRequestCreate
 
 def create_transport_request(db: Session, req: TransportRequestCreate):
-    obj = TransportRequest(**req.dict())
+    obj = TransportRequest(**req.model_dump())
     db.add(obj)
     db.commit()
     db.refresh(obj)

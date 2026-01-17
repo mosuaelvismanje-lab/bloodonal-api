@@ -11,6 +11,10 @@ from .doctor import Doctor
 from .payment import Payment, PaymentStatus
 from .usage_counter import UsageCounter
 
+# ✅ Added missing models
+from .user import User
+from .call_session import CallSession
+
 __all__ = [
     "BloodDonor",
     "BloodRequest",
@@ -23,4 +27,6 @@ __all__ = [
     "Payment",
     "PaymentStatus",
     "UsageCounter",
+    "User",         # ✅ Added
+    "CallSession",  # ✅ Added
 ]

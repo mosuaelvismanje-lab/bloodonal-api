@@ -47,9 +47,9 @@ class FlutterwavePaymentGateway(IPaymentGateway):
         if resp.status_code not in (200, 201):
             logger.error(f"Flutterwave error: {resp.text}")
             # Raise ValueError so the UseCase returns HTTP 402
-            raise ValueError(f"Payment failed: {resp.json().get('message', 'Unknown error')}")
+            raise ValueError(f"Payment failed: {resp.model_dump_json().get('message', 'Unknown error')}")
 
-        data = resp.json()
+        data = resp.model_dump_json()
 
         # Check if the transaction was successfully initiated
         if data.get("status") == "error":
@@ -71,7 +71,7 @@ class FlutterwavePaymentGateway(IPaymentGateway):
         if resp.status_code != 200:
             return "pending"
 
-        data = resp.json()
+        data = resp.model_dump_json()
         status = data.get("data", {}).get("status", "pending")
 
         # Normalize status for the domain layer

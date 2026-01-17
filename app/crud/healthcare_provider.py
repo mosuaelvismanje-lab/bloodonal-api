@@ -7,7 +7,7 @@ from app.schemas.healthcare_providers import HealthcareProviderCreate
 
 
 async def create_provider(db: AsyncSession, prov: HealthcareProviderCreate):
-    obj = HealthcareProvider(**prov.dict())
+    obj = HealthcareProvider(**prov.model_dump())
     db.add(obj)
     await db.commit()
     await db.refresh(obj)

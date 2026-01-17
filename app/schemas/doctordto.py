@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field # ✅ Added ConfigDict
 from typing import Optional
 from enum import Enum
 
@@ -6,16 +6,20 @@ from enum import Enum
 # Doctor DTO
 # -----------------------------
 class DoctorDto(BaseModel):
+    # ✅ Use ConfigDict instead of a raw dictionary
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     name: str
     is_online: bool
-
-    model_config = {"from_attributes": True}  # Pydantic V2 replacement for orm_mode
 
 # -----------------------------
 # Request / Response
 # -----------------------------
 class RequestResponse(BaseModel):
+    # ✅ Added for consistency and to allow direct ORM mapping
+    model_config = ConfigDict(from_attributes=True)
+
     success: bool
     message: Optional[str] = None
     request_id: Optional[str] = None
@@ -23,7 +27,7 @@ class RequestResponse(BaseModel):
     transaction_id: Optional[str] = None
 
 # -----------------------------
-# Optional: Use Enums for roles/channels
+# Enums (No changes needed here)
 # -----------------------------
 class UserRoles(str, Enum):
     DOCTOR = "doctor"

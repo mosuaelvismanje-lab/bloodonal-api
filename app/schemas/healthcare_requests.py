@@ -1,9 +1,13 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict  # ✅ Added ConfigDict
 from typing import Optional
 from datetime import datetime
-from app.models.healthcare_provider import ProviderType  # import the enum
+from app.models.healthcare_provider import ProviderType
+
 
 class HealthcareRequestBase(BaseModel):
+    # ✅ Set config at the base so Create and Request both inherit it
+    model_config = ConfigDict(from_attributes=True)
+
     requester_name: str
     phone: str
     city: Optional[str] = None
@@ -13,22 +17,24 @@ class HealthcareRequestBase(BaseModel):
     assigned_provider_id: Optional[int] = None
     status: Optional[str] = "pending"
 
+
 class HealthcareRequestCreate(HealthcareRequestBase):
     pass
 
+
 # Optional nested provider info
 class HealthcareProviderInfo(BaseModel):
+    # ✅ Modern Pydantic V2 Configuration
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     service_type: Optional[ProviderType] = None
 
-    class Config:
-        from_attributes = True
 
 class HealthcareRequest(HealthcareRequestBase):
     id: int
     created_at: datetime
-    provider: Optional[HealthcareProviderInfo] = None  # Nested provider info
+    provider: Optional[HealthcareProviderInfo] = None
 
-    class Config:
-        from_attributes = True  # For ORM integration
+    # ❌ REMOVED: class Config block (now inherited from HealthcareRequestBase)
