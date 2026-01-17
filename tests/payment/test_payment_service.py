@@ -1,6 +1,15 @@
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import patch, AsyncMock
 from app.gateways.mock_adapter import MockAdapter
+
+# ✅ A simple "Fake" class to prevent Pydantic V2 from inspecting a MagicMock
+class DummyResponse:
+    def __init__(self, json_data, status_code=200):
+        self.json_data = json_data
+        self.status_code = status_code
+
+    def json(self):
+        return self.json_data
 
 @pytest.mark.asyncio
 async def test_mock_adapter_charge_success():
@@ -10,34 +19,27 @@ async def test_mock_adapter_charge_success():
     tx_id = await adapter.charge(user_id=mock_user_id, amount=100)
 
     assert tx_id.startswith("mock-user123-")
-    # Verify is likely async
     assert await adapter.verify(tx_id) is True
 
-
 @pytest.mark.asyncio
-# ✅ FIX 1: Explicitly use new_callable=AsyncMock for the async post call
+# ✅ We use AsyncMock for the network call itself
 @patch("app.gateways.stripe_adapter.httpx.AsyncClient.post", new_callable=AsyncMock)
 async def test_stripe_adapter_charge_mock(mock_post):
     from app.gateways.stripe_adapter import StripeAdapter
 
-    # 1. Create a mock response object
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-
-    # ✅ FIX 2: Explicitly define the json() return as a DICTIONARY
-    # This prevents the "Mock Chain" error in Pydantic models
-    mock_response.json.return_value = {"id": "txn_123"}
-
-    # 2. Set the return value for the awaited call
-    mock_post.return_value = mock_response
+    # 1. Provide a REAL object as the return value.
+    # This prevents the 'post().model_dump_json().get()' error
+    # because Pydantic won't find 'magic' methods on this simple class.
+    mock_post.return_value = DummyResponse(
+        json_data={"id": "txn_123"},
+        status_code=200
+    )
 
     adapter = StripeAdapter(api_key="sk_test_dummy")
 
-    # 3. Execute the call
+    # 2. Execute the call (this will now properly resolve the 'await')
     tx_id = await adapter.charge(user_id="user123", amount=100)
 
-    # 4. Final Assertion
-    # Because of FIX 1 and 2, tx_id will now be the string "txn_123"
+    # 3. Final Assertion
     assert tx_id == "txn_123"
-
 
