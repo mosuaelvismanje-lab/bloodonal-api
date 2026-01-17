@@ -5,6 +5,7 @@
       <excludeFolder url="file://$MODULE_DIR$/.venv/Scripts/python.ex" />
       <excludeFolder url="file://$MODULE_DIR$/.venv/Scripts/python.exe" />
       <excludeFolder url="file://$MODULE_DIR$/venv" />
+      <excludeFolder url="file://$MODULE_DIR$/.venv/Scripts/python.exee" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.12 (bloodonal-api)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
