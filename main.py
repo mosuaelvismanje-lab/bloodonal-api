@@ -1,4 +1,3 @@
-# main.py
 import os
 import base64
 import tempfile
@@ -7,17 +6,20 @@ import atexit
 from contextlib import asynccontextmanager
 from pathlib import Path
 import uuid
+from typing import Optional
 
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-from fastapi import FastAPI, Depends, APIRouter
+from fastapi import FastAPI, Depends, APIRouter, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from pydantic import BaseModel
 
 from app.config import settings
-from app.database import Base  # ensures models are imported for Alembic (no side-effects)
-from app.db.session import get_db  # dependency that yields AsyncSession (async SQLAlchemy)
+from app.database import Base
+# ✅ Keep get_db for health checks, but ensure routers use get_db_session for testing
+from app.db.session import get_db
 
 # -------------------------
 # Logging
@@ -62,7 +64,6 @@ def init_firebase() -> bool:
     try:
         firebase_admin.get_app()
         log.info("Firebase default app already initialized.")
-        _cleanup_firebase_temp_files()
         return True
     except ValueError:
         pass
@@ -79,36 +80,25 @@ def init_firebase() -> bool:
     if not cred and os.path.exists(render_secret_path):
         cred = credentials.Certificate(render_secret_path)
         source = f"Render secret file: {render_secret_path}"
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = render_secret_path
 
     env_json = os.environ.get("FIREBASE_CREDENTIALS_JSON")
     if not cred and env_json:
         path = _write_temp_json(env_json)
         cred = credentials.Certificate(path)
         source = "FIREBASE_CREDENTIALS_JSON env content"
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
 
     if not cred and os.environ.get("FIREBASE_CRED_BASE64"):
         path = _write_temp_base64(os.environ["FIREBASE_CRED_BASE64"])
         cred = credentials.Certificate(path)
         source = "FIREBASE_CRED_BASE64 env content"
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
 
     if cred:
         try:
             firebase_admin.initialize_app(cred)
             log.info(f"✅ Firebase initialized from {source}")
-            _cleanup_firebase_temp_files()
             return True
-        except ValueError as e:
-            if "The default Firebase app already exists." in str(e):
-                log.info("Firebase already initialized, skipping.")
-                _cleanup_firebase_temp_files()
-                return True
-            log.error(f"Failed Firebase init from {source}: {e}")
-            return False
         except Exception as e:
-            log.error(f"Unexpected Firebase init error from {source}: {e}")
+            log.error(f"Failed Firebase init from {source}: {e}")
             return False
 
     log.info("No Firebase credentials found; skipping Firebase initialization.")
@@ -157,7 +147,7 @@ app.add_middleware(
 # -------------------------
 # Include routers
 # -------------------------
-# Core routers (v1)
+# Standard v1 Routers
 from app.routers import (
     blood_donor,
     blood_request,
@@ -168,25 +158,12 @@ from app.routers import (
     chat,
     notifications,
     consultation,
-    bike_payment,  # ✅ ADDED: Import bike router
+    bike_payment,
+    doctor_payments,
+    nurse_payments,
+    taxi_payment,
+    blood_request_payments  # ✅ FIXED: Added missing import
 )
-
-# API / payment & admin dashboards
-try:
-    from app.api.routers import payments as payments_module
-    payments_router = getattr(payments_module, "router", None) or payments_module.router
-except Exception:
-    payments_router = None
-
-try:
-    from app.api.admin import router as admin_router
-except Exception:
-    admin_router = None
-
-try:
-    from app.api.dashboard import router as dashboard_router
-except Exception:
-    dashboard_router = None
 
 # Group API v1 routers
 api_router = APIRouter(prefix=f"/{settings.API_VERSION}")
@@ -200,22 +177,33 @@ api_router.include_router(transport_request.router)
 api_router.include_router(chat.router)
 api_router.include_router(notifications.router)
 api_router.include_router(consultation.router)
-api_router.include_router(bike_payment.router) # ✅ ADDED: Register bike router here
+api_router.include_router(bike_payment.router)
+api_router.include_router(doctor_payments.router)
+api_router.include_router(nurse_payments.router)
+api_router.include_router(taxi_payment.router)
+api_router.include_router(blood_request_payments.router) # ✅ FIXED: Registered router
 
+# Mount versioned router
 app.include_router(api_router)
 
-if payments_router:
-    app.include_router(payments_router)
-if admin_router:
-    app.include_router(admin_router)
-if dashboard_router:
-    app.include_router(dashboard_router)
+# Optional Dashboard/Admin Routers
+try:
+    from app.api.routers import payments as payments_module
+    app.include_router(payments_module.router)
+except (ImportError, AttributeError):
+    log.debug("Payments module router not found, skipping.")
 
-# -------------------------
-# DB dependency
-# -------------------------
-def get_db_dependency():
-    return get_db
+try:
+    from app.api.admin import router as admin_router
+    app.include_router(admin_router)
+except (ImportError, AttributeError):
+    log.debug("Admin router not found, skipping.")
+
+try:
+    from app.api.dashboard import router as dashboard_router
+    app.include_router(dashboard_router)
+except (ImportError, AttributeError):
+    log.debug("Dashboard router not found, skipping.")
 
 # -------------------------
 # Health / test endpoints
@@ -223,15 +211,6 @@ def get_db_dependency():
 @app.get("/", tags=["health"])
 async def root():
     return {"message": f"{settings.PROJECT_NAME} (API {settings.API_VERSION}) is up and running!"}
-
-@app.get("/firebase-test", tags=["health"])
-async def firebase_test():
-    try:
-        db = firestore.client()
-        collections = [c.id for c in db.collections()]
-        return {"collections": collections}
-    except Exception as e:
-        return {"error": str(e)}
 
 @app.get("/db-test", tags=["health"])
 async def db_test_route(session = Depends(get_db)):
@@ -246,8 +225,6 @@ async def db_test_route(session = Depends(get_db)):
 # -------------------------
 call_router = APIRouter(prefix="/calls", tags=["calls"])
 
-from pydantic import BaseModel
-
 class CallRequestPayload(BaseModel):
     caller_id: str
     callee_id: str
@@ -257,30 +234,12 @@ class CallRequestPayload(BaseModel):
 class SessionResponse(BaseModel):
     session_id: str
     room_name: str
-    token: str | None = None
+    token: Optional[str] = None
 
 @call_router.post("/session", response_model=SessionResponse)
 async def create_call_session(payload: CallRequestPayload):
     room_name = f"call_{uuid.uuid4().hex}"
     session_id = str(uuid.uuid4())
-    token = None
-    return SessionResponse(session_id=session_id, room_name=room_name, token=token)
-
-@call_router.post("/session/voice", response_model=SessionResponse)
-async def create_voice_session(payload: CallRequestPayload):
-    payload.call_mode = "VOICE"
-    return await create_call_session(payload)
-
-@call_router.post("/session/video", response_model=SessionResponse)
-async def create_video_session(payload: CallRequestPayload):
-    payload.call_mode = "VIDEO"
-    return await create_call_session(payload)
-
-class EndCallRequest(BaseModel):
-    session_id: str
-
-@call_router.post("/session/end")
-async def end_call(request: EndCallRequest):
-    return {"success": True, "message": f"Call {request.session_id} ended."}
+    return SessionResponse(session_id=session_id, room_name=room_name)
 
 app.include_router(call_router)

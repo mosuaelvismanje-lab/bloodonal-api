@@ -1,4 +1,3 @@
-# app/routers/nurse_payments.py
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -7,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# ✅ Aligned Dependencies: Using the same pattern as Bike/Doctor
 from app.api.dependencies import get_current_user, get_db_session
 from app.schemas.payment import (
     PaymentRequest,
@@ -14,85 +14,93 @@ from app.schemas.payment import (
     FreeUsageResponse,
     PaymentStatus,
 )
-from app.domain.usecases import ConsultationUseCase
-from app.data.repositories import UsageRepository
+from app.services.payment_service import PaymentService
 
+# -------------------------
+# Logger Configuration
+# -------------------------
 logger = logging.getLogger(__name__)
 
+# -------------------------
+# Router Configuration
+# -------------------------
 router = APIRouter(
-    prefix="/v1/payments/nurse",
-    tags=["payments"],
+    prefix="/payments/nurse-services",
+    tags=["nurse-payments"],
+    redirect_slashes=False
 )
 
 
 # -------------------------------------------------
-# GET REMAINING FREE NURSE CONSULTS
+# GET REMAINING FREE NURSE USES
 # -------------------------------------------------
 @router.get("/remaining", response_model=FreeUsageResponse)
-async def remaining_nurse_consults(
-    user_id: Optional[str] = None,
-    db: AsyncSession = Depends(get_db_session),
+async def remaining_nurse_uses(
+        user_id: Optional[str] = None,
+        db: AsyncSession = Depends(get_db_session),
+        current_user=Depends(get_current_user),
 ):
     """
-    Returns remaining free nurse consults.
-    user_id is optional to preserve backward compatibility.
+    Returns remaining free nurse services for a user following the Bike pattern.
     """
     try:
-        used = await UsageRepository(db).count(user_id or "")
-        free_limit = 0  # domain logic may later override this
-        return FreeUsageResponse(remaining=max(0, free_limit - used))
+        # Priority: Query Parameter > Authenticated User UID
+        target_uid = user_id or getattr(current_user, "uid", "")
+
+        remaining = await PaymentService.get_remaining_free_uses(
+            db,
+            target_uid,
+            category="nurse",
+        )
+        return FreeUsageResponse(remaining=remaining)
+
     except Exception:
-        logger.exception("Error computing remaining nurse consults")
+        logger.exception("Error computing remaining nurse uses")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to compute remaining nurse consults",
+            detail="Unable to compute remaining free nurse services",
         )
 
 
 # -------------------------------------------------
-# PAY FOR NURSE CONSULT
+# PAY FOR NURSE SERVICE
 # -------------------------------------------------
-@router.post("/", response_model=PaymentResponse)
-async def pay_for_nurse(
-    req: PaymentRequest,
-    db: AsyncSession = Depends(get_db_session),
-    current_user=Depends(get_current_user),
-    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
+@router.post("", response_model=PaymentResponse)
+async def pay_nurse_service(
+        req: PaymentRequest,  # ✅ Standardized: No longer using NursePaymentRequest
+        db: AsyncSession = Depends(get_db_session),
+        current_user=Depends(get_current_user),
+        x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
 ):
     """
-    Initiates nurse payment.
-    Tests monkeypatch ConsultationUseCase.handle, so gateway is not required.
+    Initiates a nurse service payment using current_user.uid.
+    Matches the standardized PaymentRequest pattern.
     """
     try:
-        uc = ConsultationUseCase(
-            usage_repo=UsageRepository(db),
-            gateway=None,  # patched in tests
-        )
+        # Step 1: Secure Identity from Token
+        user_id = current_user.uid
 
-        tx_id = await uc.handle(
-            user_id=current_user.uid,
-            service="nurse",
-            phone=req.phone,
+        # Step 2: Process via common PaymentService
+        payment_result = await PaymentService.process_payment(
+            db=db,
+            user_id=user_id,
+            category="nurse",
+            req=req,
             idempotency_key=x_idempotency_key,
         )
 
-        reference = uuid.uuid4().hex.upper()
-        expires_at = datetime.now(timezone.utc)
-
+        # Step 3: Standardized Response Mapping (Safely handling attributes)
         return PaymentResponse(
             success=True,
-            reference=reference,
+            reference=getattr(payment_result, "reference", uuid.uuid4().hex.upper()),
             status=PaymentStatus.PENDING,
-            expires_at=expires_at,
-            message=f"transaction:{tx_id}",
-            ussd_string=None,
+            expires_at=getattr(payment_result, "expires_at", datetime.now(timezone.utc)),
+            message=getattr(payment_result, "message", "Nurse service payment initiated"),
+            ussd_string=getattr(payment_result, "ussd_string", None),
         )
 
     except Exception:
-        logger.exception(
-            "Payment processing failed for nurse user=%s",
-            getattr(current_user, "uid", None),
-        )
+        logger.exception("Nurse payment failed for user=%s", getattr(current_user, "uid", None))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Payment processing failed",

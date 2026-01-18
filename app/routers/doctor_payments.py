@@ -1,14 +1,13 @@
-import asyncio
-import inspect
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_async_session
+# ✅ Aligning with Bike pattern dependencies
+from app.api.dependencies import get_current_user, get_db_session
 from app.schemas.payment import (
     PaymentRequest,
     PaymentResponse,
@@ -17,65 +16,46 @@ from app.schemas.payment import (
 )
 from app.services.payment_service import PaymentService
 
+# -------------------------
+# Logger Configuration
+# -------------------------
 logger = logging.getLogger(__name__)
 
-# -------------------------------------------------
-# ROUTER CONFIG
-# -------------------------------------------------
-# Tests expect:
-#   GET  /v1/payments/doctor-consults/remaining
-#   POST /v1/payments/doctor-consults
+# -------------------------
+# Router Configuration
+# -------------------------
 router = APIRouter(
-    prefix="/v1/payments/doctor-consults",
+    prefix="/payments/doctor-consults",
     tags=["doctor-payments"],
+    redirect_slashes=False  # Aligned with Bike
 )
-
-# -------------------------------------------------
-# SERVICE ALIASES & FALLBACKS
-# -------------------------------------------------
-DOCTOR_FEE = getattr(PaymentService, "DOCTOR_FEE", 300)
-
-get_remaining_free_uses = PaymentService.get_remaining_free_uses
-process_payment = PaymentService.process_payment
-
-
-async def _maybe_await(func: Any, *args, **kwargs):
-    """
-    Call async or sync service functions safely.
-    """
-    if inspect.iscoroutinefunction(func):
-        return await func(*args, **kwargs)
-    return await asyncio.to_thread(func, *args, **kwargs)
-
 
 # -------------------------------------------------
 # GET REMAINING FREE DOCTOR CONSULTS
 # -------------------------------------------------
 @router.get("/remaining", response_model=FreeUsageResponse)
 async def remaining_doctor_consults(
-    user_id: str,
-    db: AsyncSession = Depends(get_async_session),
+    user_id: Optional[str] = None, # Matches Bike pattern optional param
+    db: AsyncSession = Depends(get_db_session), # Changed to get_db_session
 ):
     """
     Returns remaining free doctor consultations for a user.
     """
     try:
-        remaining = await _maybe_await(
-            get_remaining_free_uses,
+        # Using PaymentService directly as a static/class method
+        remaining = await PaymentService.get_remaining_free_uses(
             db,
-            user_id,
+            user_id or "",
             category="doctor",
         )
         return FreeUsageResponse(remaining=remaining)
 
-    except Exception as exc:
-        logger.exception(
-            "Error computing remaining doctor consults for user=%s", user_id
-        )
+    except Exception:
+        logger.exception("Error computing remaining doctor consults")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to compute remaining free consults",
-        ) from exc
+        )
 
 
 # -------------------------------------------------
@@ -84,54 +64,40 @@ async def remaining_doctor_consults(
 @router.post("", response_model=PaymentResponse)
 async def pay_doctor_consult(
     req: PaymentRequest,
-    db: AsyncSession = Depends(get_async_session),
-    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
+    db: AsyncSession = Depends(get_db_session), # Changed to get_db_session
+    current_user = Depends(get_current_user),     # ✅ ADDED: Same as Bike
+    x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
 ):
     """
-    Initiates a doctor consultation payment.
-
-    Uses PaymentService to:
-    - apply free-usage rules
-    - create a payment record
-    - initiate gateway charge
-
-    Tests monkeypatch process_payment(), so implementation details
-    must remain thin and predictable.
+    Initiates a doctor consultation payment using current_user.uid.
+    Matches the Bike pattern to avoid body-schema attribute errors.
     """
     try:
-        payment_result = await _maybe_await(
-            process_payment,
+        # Step 1: Use user_id from the authenticated token, just like Bike
+        user_id = current_user.uid
+
+        # Step 2: Process payment
+        payment_result = await PaymentService.process_payment(
             db=db,
-            user_id=req.user_id,
+            user_id=user_id,
             category="doctor",
             req=req,
             idempotency_key=x_idempotency_key,
         )
 
-        # Service-safe fields
-        reference = getattr(
-            payment_result, "reference", uuid.uuid4().hex.upper()
-        )
-        expires_at = getattr(
-            payment_result,
-            "expires_at",
-            datetime.now(timezone.utc),
-        )
-
+        # Step 3: Map to response
         return PaymentResponse(
             success=True,
-            reference=reference,
+            reference=getattr(payment_result, "reference", uuid.uuid4().hex.upper()),
             status=PaymentStatus.PENDING,
-            expires_at=expires_at,
-            message=getattr(payment_result, "message", None),
+            expires_at=getattr(payment_result, "expires_at", datetime.now(timezone.utc)),
+            message=getattr(payment_result, "message", "Doctor consultation payment initiated"),
             ussd_string=getattr(payment_result, "ussd_string", None),
         )
 
-    except Exception as exc:
-        logger.exception(
-            "Doctor payment failed for user=%s", getattr(req, "user_id", None)
-        )
+    except Exception:
+        logger.exception("Doctor payment failed for user=%s", getattr(current_user, "uid", None))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Payment processing failed",
-        ) from exc
+        )
