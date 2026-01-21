@@ -2,9 +2,8 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from fastapi import status
 from main import app
-from app.api.dependencies import get_current_user
-from app.database import get_async_session
-
+from app.api.dependencies import get_current_user, get_db_session
+from unittest.mock import AsyncMock
 
 # -------------------------
 # 1. Setup localized mocks
@@ -13,35 +12,30 @@ class MockUser:
     def __init__(self):
         self.uid = "doctor_test_user_456"
 
-
 async def override_get_current_user():
     return MockUser()
 
-
-async def override_get_async_session():
-    # Yield a string or mock object since we monkeypatch the service
-    yield "mock_db_session"
-
-
-# Apply overrides to the app
-app.dependency_overrides[get_current_user] = override_get_current_user
-app.dependency_overrides[get_async_session] = override_get_async_session
-
+async def override_get_db_session():
+    # Yield a mock session to satisfy the dependency
+    yield AsyncMock()
 
 @pytest.mark.asyncio
 async def test_pay_doctor_consult_success(monkeypatch):
     """
     Test successful doctor consultation payment initiation.
+    Fixes the 422 error by aligning payload with PaymentRequest schema.
     """
+    # Apply overrides specifically for this test
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[get_db_session] = override_get_db_session
 
-    # 2. Mock the service process_payment call
-    # The router expects an object with specific attributes (reference, expires_at, etc.)
+    # 2. Mock the PaymentService.process_payment call
     class MockPaymentResult:
         def __init__(self):
             self.reference = "DOC-REF-789"
             self.message = "Payment initiated"
             self.ussd_string = "*123#"
-            # datetime is handled by the router's getattr default if not provided
+            # status and expires_at are handled by the router/schema defaults
 
     async def mock_process_payment(*args, **kwargs):
         return MockPaymentResult()
@@ -51,12 +45,10 @@ async def test_pay_doctor_consult_success(monkeypatch):
         mock_process_payment
     )
 
-    # 3. Valid Payload
+    # 3. Valid Payload (STRICT: matches PaymentRequest schema)
+    # Removing user_id, amount, and currency from body to avoid 422
     payload = {
-        "user_id": "doctor_test_user_456",
-        "phone": "670000000",
-        "amount": 300.0,
-        "currency": "XAF"
+        "phone": "670000000"
     }
 
     # 4. Execute Request
@@ -68,11 +60,15 @@ async def test_pay_doctor_consult_success(monkeypatch):
             headers={"X-Idempotency-Key": "doc-idempotency-789"}
         )
 
+    # Cleanup overrides
+    app.dependency_overrides.clear()
+
     # 5. Assertions
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
     assert data["success"] is True
     assert data["reference"] == "DOC-REF-789"
+    # Note: status comes from PaymentStatus.PENDING in the router
     assert data["status"] == "PENDING"
 
 
@@ -81,10 +77,11 @@ async def test_get_remaining_doctor_consults(monkeypatch):
     """
     Test the GET endpoint for remaining free doctor consultations.
     """
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[get_db_session] = override_get_db_session
 
     # 1. Mock the Service get_remaining_free_uses method
     async def mock_remaining(*args, **kwargs):
-        # The router passes category="doctor"
         return 5
 
     monkeypatch.setattr(
@@ -95,8 +92,10 @@ async def test_get_remaining_doctor_consults(monkeypatch):
     # 2. Execute Request
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        # The router requires user_id as a query param
+        # Testing query param logic
         response = await ac.get("/v1/payments/doctor-consults/remaining?user_id=doctor_test_user_456")
+
+    app.dependency_overrides.clear()
 
     # 3. Assertions
     assert response.status_code == status.HTTP_200_OK
