@@ -20,27 +20,28 @@ if not RAW_URL or "${" in RAW_URL:
 else:
     DATABASE_URL = RAW_URL
 
-# 2. ✅ DRIVER FIX: Ensure we use asyncpg
+# 2. ✅ DRIVER FIX: Ensure we use asyncpg for the async engine
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# 3. ✅ CLEANUP: Strip ALL query parameters (the "Nuclear" fix)
-# This removes ?sslmode=..., ?options=..., etc. completely to avoid TypeError
-if "?" in DATABASE_URL:
-    DATABASE_URL = DATABASE_URL.split("?")[0]
+# 3. ✅ THE "NUCLEAR" CLEANUP: Strip EVERYTHING after the '?'
+# This is the most reliable way to ensure 'sslmode' or 'options' never reach the driver.
+DATABASE_URL = DATABASE_URL.split("?")[0]
 
 # 4. ✅ SSL FIX: Official connect_args approach
-# We pass SSL settings directly to the driver instead of messing with the URL string
+# We pass SSL settings directly to the driver as a Python dictionary.
 connect_args = {}
 if "neon.tech" in DATABASE_URL or os.getenv("RENDER") == "true":
     # Neon and Render both require SSL for production database connections
     connect_args = {"ssl": "require"}
 
+# DEBUG: This will show up in your terminal so you can verify the URL is clean
+print(f"--- Connecting to DB: {DATABASE_URL} ---")
+
 # 5. Create the Async Engine
-# pool_pre_ping=True is vital for production to handle stale connections
 engine = create_async_engine(
     DATABASE_URL,
-    echo=True,  # SQL logging
+    echo=True,
     future=True,
     pool_pre_ping=True,
     connect_args=connect_args
