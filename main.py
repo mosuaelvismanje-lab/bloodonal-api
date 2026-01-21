@@ -123,8 +123,9 @@ app = FastAPI(
     version=settings.API_VERSION,
     description="Bloodonal API — consultations, payments, notifications, and more.",
     lifespan=lifespan,
-    docs_url="/docs" if settings.DEBUG else None,
-    redoc_url="/redoc" if settings.DEBUG else None,
+    # ✅ FIX: Enable documentation in production regardless of settings.DEBUG
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 # -------------------------
@@ -134,7 +135,7 @@ origins_raw = os.getenv("ALLOWED_ORIGINS") or settings.ALLOWED_ORIGINS or ""
 if isinstance(origins_raw, str) and origins_raw.strip():
     allowed = [o.strip() for o in origins_raw.split(",") if o.strip()]
 else:
-    allowed = ["http://localhost"]
+    allowed = ["*"] # ✅ Temporarily allowing all for testing on mobile
 
 app.add_middleware(
     CORSMiddleware,
@@ -147,7 +148,6 @@ app.add_middleware(
 # -------------------------
 # Include routers
 # -------------------------
-# Standard v1 Routers
 from app.routers import (
     blood_donor,
     blood_request,
@@ -162,10 +162,9 @@ from app.routers import (
     doctor_payments,
     nurse_payments,
     taxi_payment,
-    blood_request_payments  # ✅ FIXED: Added missing import
+    blood_request_payments
 )
 
-# Group API v1 routers
 api_router = APIRouter(prefix=f"/{settings.API_VERSION}")
 
 api_router.include_router(blood_donor.router)
@@ -181,9 +180,8 @@ api_router.include_router(bike_payment.router)
 api_router.include_router(doctor_payments.router)
 api_router.include_router(nurse_payments.router)
 api_router.include_router(taxi_payment.router)
-api_router.include_router(blood_request_payments.router) # ✅ FIXED: Registered router
+api_router.include_router(blood_request_payments.router)
 
-# Mount versioned router
 app.include_router(api_router)
 
 # Optional Dashboard/Admin Routers
@@ -210,7 +208,11 @@ except (ImportError, AttributeError):
 # -------------------------
 @app.get("/", tags=["health"])
 async def root():
-    return {"message": f"{settings.PROJECT_NAME} (API {settings.API_VERSION}) is up and running!"}
+    return {
+        "message": f"{settings.PROJECT_NAME} (API {settings.API_VERSION}) is up and running!",
+        "docs": "/docs",
+        "status": "online"
+    }
 
 @app.get("/db-test", tags=["health"])
 async def db_test_route(session = Depends(get_db)):
