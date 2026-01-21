@@ -1,21 +1,20 @@
-# app/database.py
 from __future__ import annotations
 
-from typing import AsyncIterator, Generator, Optional
 import logging
-
+import os
 from contextlib import contextmanager
+from typing import AsyncIterator, Generator, Optional
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
-    create_async_engine,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
+    create_async_engine,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import settings
 
@@ -26,37 +25,57 @@ logger = logging.getLogger("uvicorn.error")
 # =====================================================================
 Base = declarative_base()
 
+
+# =====================================================================
+# Helper: URL Sanitization
+# =====================================================================
+def get_cleaned_url(url: str, is_async: bool = True) -> str:
+    """Strips query params like sslmode that crash specific drivers."""
+    if not url:
+        return url
+
+    # Remove everything after '?' to prevent driver argument conflicts
+    clean_url = url.split("?")[0]
+
+    if is_async and clean_url.startswith("postgresql://"):
+        clean_url = clean_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    return clean_url
+
+
 # =====================================================================
 # ASYNC Engine (FastAPI)
 # =====================================================================
 try:
-    ASYNC_DATABASE_URL = settings.ASYNC_DATABASE_URL
-except Exception as exc:  # pragma: no cover
+    ASYNC_DATABASE_URL = get_cleaned_url(settings.ASYNC_DATABASE_URL, is_async=True)
+except Exception as exc:
     logger.exception("Missing or invalid ASYNC_DATABASE_URL in settings: %s", exc)
     raise
 
-if settings.DEBUG:
-    prefix = ASYNC_DATABASE_URL[:40]
-    logger.info("Initializing async engine, url startswith=%s (len=%d)", prefix, len(ASYNC_DATABASE_URL))
+# Define SSL requirements for Async (asyncpg uses 'ssl')
+async_connect_args = {}
+if "neon.tech" in ASYNC_DATABASE_URL or not settings.DEBUG:
+    async_connect_args = {"ssl": "require"}
 
 async_engine: AsyncEngine = create_async_engine(
     ASYNC_DATABASE_URL,
     echo=settings.DEBUG,
     future=True,
     pool_pre_ping=True,
+    connect_args=async_connect_args,
 )
 
 AsyncSessionLocal = async_sessionmaker(
     bind=async_engine,
     class_=AsyncSession,
-    expire_on_commit=False
+    expire_on_commit=False,
 )
 
-logger.info("✅ Async engine initialized (for FastAPI)")
+logger.info("✅ Async engine initialized (Standardized)")
 
 
 async def get_async_session() -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency for async session."""
+    """Primary FastAPI dependency for async sessions."""
     async with AsyncSessionLocal() as session:
         try:
             yield session
@@ -67,12 +86,16 @@ async def get_async_session() -> AsyncIterator[AsyncSession]:
             await session.close()
 
 
+# Alias for code using 'get_db'
+get_db = get_async_session
+
+
 # =====================================================================
 # SYNC Engine (Alembic / Scripts)
 # =====================================================================
 SYNC_DATABASE_URL: Optional[str] = None
 try:
-    SYNC_DATABASE_URL = settings.SYNC_DATABASE_URL
+    SYNC_DATABASE_URL = get_cleaned_url(settings.SYNC_DATABASE_URL, is_async=False)
 except Exception:
     SYNC_DATABASE_URL = None
 
@@ -81,21 +104,26 @@ SyncSessionLocal: Optional[sessionmaker] = None
 
 if SYNC_DATABASE_URL:
     try:
-        if settings.DEBUG:
-            prefix = SYNC_DATABASE_URL[:40]
-            logger.info("Initializing sync engine, url startswith=%s (len=%d)", prefix, len(SYNC_DATABASE_URL))
+        # Sync driver (psycopg2) uses 'sslmode'
+        sync_connect_args = {}
+        if "neon.tech" in SYNC_DATABASE_URL or not settings.DEBUG:
+            sync_connect_args = {"sslmode": "require"}
+
         sync_engine = create_engine(
             SYNC_DATABASE_URL,
             echo=settings.DEBUG,
             future=True,
             pool_pre_ping=True,
+            connect_args=sync_connect_args,
         )
-        SyncSessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False, future=True)
-        logger.info("✅ Sync engine initialized (for Alembic / scripts)")
+        SyncSessionLocal = sessionmaker(
+            bind=sync_engine, expire_on_commit=False, future=True
+        )
+        logger.info("✅ Sync engine initialized (Standardized)")
     except Exception as exc:
         logger.exception("❌ Failed to initialize sync SQLAlchemy engine: %s", exc)
 else:
-    logger.warning("Sync DATABASE_URL not configured; Alembic may not work.")
+    logger.warning("Sync DATABASE_URL not configured.")
 
 
 @contextmanager
@@ -116,71 +144,44 @@ def get_sync_session() -> Generator:
 
 
 # =====================================================================
-# Shutdown helpers
+# Lifecycle & Helper Methods
 # =====================================================================
 async def dispose_async_engine() -> None:
-    try:
-        await async_engine.dispose()
-        logger.info("Async engine disposed")
-    except Exception as exc:
-        logger.exception("Error disposing async engine: %s", exc)
+    await async_engine.dispose()
 
 
 def dispose_sync_engine() -> None:
-    try:
-        if sync_engine:
-            sync_engine.dispose()
-            logger.info("Sync engine disposed")
-    except Exception as exc:
-        logger.exception("Error disposing sync engine: %s", exc)
+    if sync_engine:
+        sync_engine.dispose()
 
 
-# =====================================================================
-# Development helper: Create tables
-# =====================================================================
 async def init_db() -> None:
-    """Development helper — creates tables using SQLAlchemy metadata."""
+    """Creates tables using SQLAlchemy metadata."""
     import app.models  # noqa: F401
+    async with async_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
-    try:
-        async with async_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("✅ Database tables created successfully.")
-    except Exception as exc:
-        logger.exception("❌ Failed to initialize database (init_db): %s", exc)
-        raise
-
-
-# =====================================================================
-# Free Usage Helpers (REQUIRED BY payment_service.py)
-# =====================================================================
 
 async def get_free_usage_count(db: AsyncSession, user_id: str, category: str) -> int:
-    """
-    Returns how many free usages a user has consumed.
-    """
     result = await db.scalar(
-        text("""
-            SELECT count 
-            FROM free_usage 
-            WHERE user_id = :user_id AND category = :category
-        """),
-        {"user_id": user_id, "category": category}
+        text(
+            "SELECT count FROM free_usage WHERE user_id = :user_id AND category = :category"
+        ),
+        {"user_id": user_id, "category": category},
     )
     return result or 0
 
 
 async def increment_usage_count(db: AsyncSession, user_id: str, category: str) -> None:
-    """
-    Increments the usage counter for free quota.
-    Creates the row if it does not exist.
-    """
     await db.execute(
-        text("""
+        text(
+            """
             INSERT INTO free_usage (user_id, category, count)
             VALUES (:user_id, :category, 1)
             ON CONFLICT (user_id, category)
             DO UPDATE SET count = free_usage.count + 1
-        """),
-        {"user_id": user_id, "category": category}
+        """
+        ),
+        {"user_id": user_id, "category": category},
     )
+    await db.commit()
