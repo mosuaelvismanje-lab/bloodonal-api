@@ -1,5 +1,5 @@
 import os
-import re
+import logging
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
@@ -9,38 +9,41 @@ from sqlalchemy.ext.asyncio import (
 
 # Load .env file
 load_dotenv()
+log = logging.getLogger("bloodonal")
 
-# 1. Get the URL from environment, or use the verified working string as a direct fallback
-# This ensures that even if your PowerShell environment is "stuck", the test will pass.
+# 1. Get the URL from environment
 RAW_URL = os.getenv("ASYNC_DATABASE_URL") or os.getenv("DATABASE_URL")
 
+# Fallback to the direct, verified connection string if env is missing
 if not RAW_URL or "${" in RAW_URL:
-    # Fallback to the direct, verified connection string
     DATABASE_URL = "postgresql+asyncpg://neondb_owner:npg_GwbCL2UzT8KN@ep-bitter-mouse-a14xm2gk.ap-southeast-1.aws.neon.tech/neondb"
 else:
     DATABASE_URL = RAW_URL
 
-# 2. ✅ DRIVER FIX: Force the driver to asyncpg for SQLAlchemy
+# 2. ✅ DRIVER FIX: Ensure we use asyncpg
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# 3. ✅ CLEANUP: Remove parameters that asyncpg doesn't understand (causes TypeError)
-DATABASE_URL = re.sub(r'[?&]sslmode=[^&]+', '', DATABASE_URL)
-DATABASE_URL = re.sub(r'[?&]channel_binding=[^&]+', '', DATABASE_URL)
-DATABASE_URL = re.sub(r'[?&]options=[^&]+', '', DATABASE_URL)
+# 3. ✅ CLEANUP: Strip ALL query parameters (the "Nuclear" fix)
+# This removes ?sslmode=..., ?options=..., etc. completely to avoid TypeError
+if "?" in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.split("?")[0]
 
-# 4. ✅ SSL FIX: Inject the correct parameter for the asyncpg driver
-connector = "&" if "?" in DATABASE_URL else "?"
-if "ssl=" not in DATABASE_URL:
-    DATABASE_URL += f"{connector}ssl=require"
+# 4. ✅ SSL FIX: Official connect_args approach
+# We pass SSL settings directly to the driver instead of messing with the URL string
+connect_args = {}
+if "neon.tech" in DATABASE_URL or os.getenv("RENDER") == "true":
+    # Neon and Render both require SSL for production database connections
+    connect_args = {"ssl": "require"}
 
 # 5. Create the Async Engine
-# echo=True will show the SQL being generated in your terminal (helpful for debugging)
+# pool_pre_ping=True is vital for production to handle stale connections
 engine = create_async_engine(
     DATABASE_URL,
-    echo=True,
+    echo=True,  # SQL logging
     future=True,
-    pool_pre_ping=True  # Automatically checks if connection is alive
+    pool_pre_ping=True,
+    connect_args=connect_args
 )
 
 # 6. Session Factory
@@ -55,5 +58,8 @@ async def get_db():
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except Exception as e:
+            log.error(f"Database session error: {e}")
+            raise
         finally:
             await session.close()
