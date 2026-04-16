@@ -1,11 +1,13 @@
-# File: app/schemas/notification.py
-from pydantic import BaseModel, ConfigDict  # ✅ Added ConfigDict
-from typing import Optional
+from pydantic import BaseModel, ConfigDict
+from typing import Optional, Dict, Any
 from datetime import datetime
+from uuid import UUID  # ✅ Required to handle Postgres UUID objects
 
 
 class FcmTokenUpdate(BaseModel):
-    # ✅ Standardizes the model for Pydantic V2
+    """
+    Schema for updating/registering a device token.
+    """
     model_config = ConfigDict(from_attributes=True)
 
     user_id: str
@@ -15,28 +17,31 @@ class FcmTokenUpdate(BaseModel):
 class NotificationDto(BaseModel):
     """
     Data Transfer Object for Notifications.
-    Supports mapping directly from SQLAlchemy objects via from_attributes.
+    Fixed: id is now UUID to match database output and prevent validation errors.
     """
-    # ✅ Replaces old-style ORM configuration
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
+    id: UUID  # ✅ Use UUID to handle the native database type
     user_id: str
-    title: Optional[str] = None
-    sub_type: str
+    title: Optional[str] = "No Title"
+    sub_type: str = "generic"
     message: str
-    location: str
-    phone: str
-    timestamp: int
+    location: Optional[str] = "N/A"
+    phone: Optional[str] = "N/A"
+    timestamp: Optional[int] = None
     read: bool = False
     created_at: Optional[datetime] = None
+    data: Optional[Dict[str, Any]] = None # Added to show custom payload in history
 
 
 class PushNotification(BaseModel):
-    # ✅ Standardizes the model for Pydantic V2
+    """
+    Schema for sending a push notification request.
+    """
     model_config = ConfigDict(from_attributes=True)
 
     title: str
     body: str
+    user_id: Optional[str] = "unknown"
     topic: Optional[str] = None
-    data: Optional[dict] = None
+    data: Optional[Dict[str, Any]] = None

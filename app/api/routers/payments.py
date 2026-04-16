@@ -1,216 +1,157 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Header
-from pydantic import BaseModel, Field
-from typing import Optional
+import uuid
 import logging
 from datetime import datetime, timedelta, timezone
-import uuid
-import hashlib
-from sqlalchemy import select
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Header, status
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# ✅ Registry & Orchestrator (Centralized Logic)
+from app.services.registry import registry
+from app.services.orchestrator import service_orchestrator
+
+# ✅ Repository & Models (Data Access Layer)
 from app.api.dependencies import get_current_user, get_db_session
-from app.domain.usecases import SERVICE_FEES, SERVICE_FREE_LIMITS
-from app.data.repositories import UsageRepository
-from app.models.payment import Payment, PaymentStatus
+from app.repositories.usage_repo import SQLAlchemyUsageRepository
+from app.repositories.payment_repo import PaymentRepository
+from app.models.payment import PaymentStatus
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(
-    prefix="/v1/payments",
-    tags=["payments"],
-)
-
-PAYMENT_EXPIRY_MINUTES = 15
-MY_COLLECTION_NUMBER = "670000000"  # Your MTN MoMo Merchant/Personal number
+router = APIRouter(prefix="/v1/payments", tags=["Payment Stack"])
 
 
-# ----------------------------
-# Schemas
-# ----------------------------
+# --- Schemas (Standardized for Android/Moshi) ---
 
 class RemainingWithFeeResponse(BaseModel):
     remaining: int
     fee: int
+    promo_message: Optional[str] = None
 
 
 class PaymentRequest(BaseModel):
-    phone: str = Field(
-        ...,
-        pattern=r"^\d{9}$",
-        description="9-digit mobile money number"
-    )
+    phone: str = Field(..., pattern=r"^\d{9,13}$")
 
 
 class PaymentResponseOut(BaseModel):
-    reference: str
+    success: bool = True
+    reference: str  # Now returning UUID strings
     status: PaymentStatus
-    expires_at: datetime
-    ussd_string: Optional[str] = None  # The hidden code for the app to dial
+    message: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    ussd_string: Optional[str] = None
 
 
 class PaymentConfirmRequest(BaseModel):
     reference: str
-    transaction_id: str  # The ID from the MTN/Orange SMS confirmation
+    transaction_id: str
 
 
-# ----------------------------
-# Helpers
-# ----------------------------
+# --- Helpers ---
 
-def validate_service_exists(service: str):
-    if service not in SERVICE_FEES:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Service '{service}' not supported"
-        )
+def get_cameroon_ussd(phone: str, amount: int) -> str:
+    """Detects carrier and generates USSD push/fallback string."""
+    is_mtn = phone.startswith(("67", "650", "651", "652", "653", "654", "68"))
+    if is_mtn:
+        return f"*126*1*{amount}#"
+    return f"*150*1*1*{amount}#"
 
 
-def generate_reference() -> str:
-    return uuid.uuid4().hex.upper()
+# --- Routes ---
 
-
-def generate_signature(reference: str, amount: float, phone: str) -> str:
-    raw = f"{reference}:{amount}:{phone}"
-    return hashlib.sha256(raw.encode()).hexdigest()
-
-
-# ----------------------------
-# Routes
-# ----------------------------
-
-@router.get(
-    "/{service}/remaining",
-    response_model=RemainingWithFeeResponse,
-    summary="Get remaining free uses and service fee",
-)
-async def get_remaining_with_fee(
+@router.get("/{service}/remaining", response_model=RemainingWithFeeResponse)
+async def get_usage_status(
         service: str,
         user=Depends(get_current_user),
-        db: AsyncSession = Depends(get_db_session),
+        db: AsyncSession = Depends(get_db_session)
 ):
-    validate_service_exists(service)
+    meta = registry.get_service_meta(service)
+    usage_repo = SQLAlchemyUsageRepository(db)
 
-    usage_repo = UsageRepository(db)
-    used = await usage_repo.count(user.uid, service)
-
-    free_limit = SERVICE_FREE_LIMITS.get(service, 0)
-    remaining = max(0, free_limit - used)
-    fee = SERVICE_FEES[service]
+    # user.uid is a UUID object; repo handles the count
+    used = await usage_repo.count_uses(user.uid, service)
+    remaining = max(0, meta["free_limit"] - used)
+    fee = meta["base_fee"] if meta["is_payment_globally_enabled"] else 0
 
     return RemainingWithFeeResponse(
         remaining=remaining,
         fee=fee,
+        promo_message=meta["promo_message"]
     )
 
 
-@router.post(
-    "/{service}",
-    response_model=PaymentResponseOut,
-    summary="Initiate a payment (manual USSD flow)",
-)
-async def pay_service(
+@router.post("/{service}", response_model=PaymentResponseOut)
+async def initiate_payment(
         service: str,
         req: PaymentRequest,
         idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
         user=Depends(get_current_user),
-        db: AsyncSession = Depends(get_db_session),
+        db: AsyncSession = Depends(get_db_session)
 ):
-    validate_service_exists(service)
+    usage_repo = SQLAlchemyUsageRepository(db)
+    payment_repo = PaymentRepository(db)
 
-    # 1️⃣ Check free usage
-    usage_repo = UsageRepository(db)
-    used = await usage_repo.count(user.uid, service)
-    free_limit = SERVICE_FREE_LIMITS.get(service, 0)
+    used = await usage_repo.count_uses(user.uid, service)
+    fee = registry.calculate_effective_fee(service, used)
 
-    if used < free_limit:
-        # Consume free slot
-        await usage_repo.increment(user.uid, service)
-        return PaymentResponseOut(
-            reference="FREE-" + uuid.uuid4().hex[:10],
-            status=PaymentStatus.SUCCESS,
-            expires_at=datetime.now(timezone.utc),
-            ussd_string=None
+    # 1. FREE TIER: Automated Activation via Orchestrator
+    if fee <= 0:
+        listing = await service_orchestrator.activate_listing(
+            db=db, user_id=user.uid, service_type=service, activation_ref=idempotency_key
         )
+        await db.commit()
+        return PaymentResponseOut(reference=str(listing.id), status=PaymentStatus.SUCCESS)
 
-    # 2️⃣ Prevent duplicate charge (Idempotency)
-    existing = await db.scalar(
-        select(Payment).where(Payment.idempotency_key == idempotency_key)
-    )
+    # 2. IDEMPOTENCY: Check existing payments via Repository
+    existing = await payment_repo.get_by_idempotency(idempotency_key)
     if existing:
-        ussd_code = f"*126*{MY_COLLECTION_NUMBER}*{existing.amount}#"
         return PaymentResponseOut(
-            reference=existing.reference,
+            reference=str(existing.id),
             status=existing.status,
-            expires_at=existing.created_at + timedelta(minutes=PAYMENT_EXPIRY_MINUTES),
-            ussd_string=ussd_code
+            ussd_string=get_cameroon_ussd(req.phone, int(existing.amount))
         )
 
-    # 3️⃣ Create Payment Entry
-    amount = SERVICE_FEES[service]
-    reference = generate_reference()
-    now = datetime.now(timezone.utc)
-
-    # Determine provider
-    provider = "MTN" if req.phone.startswith(("67", "650", "651", "652", "653", "654")) else "ORANGE"
-
-    # Generate USSD code
-    ussd_code = f"*126*{MY_COLLECTION_NUMBER}*{amount}#"
-
-    payment = Payment(
-        reference=reference,
+    # 3. PAID FLOW: Create PENDING record
+    payment = await payment_repo.create_payment(
         user_id=user.uid,
-        user_phone=req.phone,
-        service_type=service,
-        amount=amount,
-        currency="XAF",
-        provider=provider,
-        signature=generate_signature(reference, amount, req.phone),
-        status=PaymentStatus.PENDING,
+        payment_type=service,
+        amount=fee,
         idempotency_key=idempotency_key,
-        created_at=now,
+        details={"phone": req.phone}
     )
 
-    db.add(payment)
     await db.commit()
 
     return PaymentResponseOut(
-        reference=reference,
+        reference=str(payment.id),
         status=PaymentStatus.PENDING,
-        expires_at=now + timedelta(minutes=PAYMENT_EXPIRY_MINUTES),
-        ussd_string=ussd_code
+        ussd_string=get_cameroon_ussd(req.phone, int(fee)),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15)
     )
 
 
-@router.post(
-    "/confirm",
-    summary="Submit transaction ID from SMS",
-)
+@router.post("/confirm", response_model=PaymentResponseOut)
 async def confirm_payment(
         req: PaymentConfirmRequest,
         user=Depends(get_current_user),
         db: AsyncSession = Depends(get_db_session)
 ):
-    """
-    User dials USSD, gets an SMS from MTN/Orange, then submits the Transaction ID here.
-    """
-    stmt = select(Payment).where(
-        Payment.reference == req.reference,
-        Payment.user_id == user.uid
+    payment_repo = PaymentRepository(db)
+
+    # Update status with State Machine Guard built into Repo
+    updated = await payment_repo.update_status(
+        payment_id=uuid.UUID(req.reference),
+        new_status=PaymentStatus.AWAITING_VERIFICATION,
+        provider_tx_id=req.transaction_id
     )
-    payment = await db.scalar(stmt)
 
-    if not payment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Payment reference not found"
-        )
-
-    # Assign transaction ID and set status to AWAITING_VERIFICATION
-    payment.provider_tx_id = req.transaction_id
-    payment.status = PaymentStatus.AWAITING_VERIFICATION
+    if not updated:
+        raise HTTPException(status_code=400, detail="Invalid reference or already finalized")
 
     await db.commit()
-
-    logger.info(f"Payment verification claimed | ref={req.reference} tx_id={req.transaction_id}")
-
-    return {"message": "Payment submitted for manual verification."}
+    return PaymentResponseOut(
+        reference=str(updated.id),
+        status=updated.status,
+        message="Verification in progress."
+    )

@@ -1,15 +1,17 @@
-import asyncio
-import inspect
 import logging
-from typing import List, Callable, Any, Optional
+from typing import List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app.config import settings
-from app.schemas.healthcare_providers import HealthcareProvider, HealthcareProviderCreate, HealthcareProviderUpdate
+# ✅ Standards-aligned Dependencies
+from app.api.dependencies import get_db_session, get_current_user
+from app.schemas.healthcare_providers import (
+    HealthcareProvider,
+    HealthcareProviderCreate,
+    HealthcareProviderUpdate,
+    HealthcareProviderShort
+)
 from app.crud.healthcare_provider import (
     create_provider,
     get_providers,
@@ -17,75 +19,108 @@ from app.crud.healthcare_provider import (
     update_provider,
     delete_provider
 )
-from app.database import get_async_session
-
-from app.models.healthcare_provider import ProviderType
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/providers", tags=["HealthcareProviders"])
-
-SYNC_ENGINE = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
-SyncSessionLocal = sessionmaker(bind=SYNC_ENGINE, expire_on_commit=False)
+# ✅ Versioning: Prefix set to /v1 to match production API layout
+router = APIRouter(prefix="/v1/providers", tags=["HealthcareProviders"])
 
 
-async def _run_sync_in_thread(fn: Callable, *args, **kwargs) -> Any:
-    def _inner():
-        with SyncSessionLocal() as db:
-            return fn(db, *args, **kwargs)
-    return await asyncio.to_thread(_inner)
-
-
-async def _maybe_await_with_session(func: Callable, async_session: AsyncSession, *args, **kwargs):
-    if inspect.iscoroutinefunction(func):
-        return await func(async_session, *args, **kwargs)
-    return await _run_sync_in_thread(func, *args, **kwargs)
-
-
-#  CREATE
+# -------------------------------------------------
+# CREATE PROVIDER (Protected)
+# -------------------------------------------------
 @router.post("/", response_model=HealthcareProvider, status_code=status.HTTP_201_CREATED)
-async def create(p: HealthcareProviderCreate, db: AsyncSession = Depends(get_async_session)):
-    if p.service_type and p.service_type not in ProviderType.__members__:
-        raise HTTPException(status_code=400, detail="Invalid service_type")
-    result = await _maybe_await_with_session(create_provider, db, p)
-    return result
-
-
-#  LIST WITH FILTERS
-@router.get("/", response_model=List[HealthcareProvider])
-async def list_all(
-    skip: int = 0,
-    limit: int = 100,
-    service_type: Optional[str] = None,
-    name: Optional[str] = None,
-    db: AsyncSession = Depends(get_async_session)
+async def create(
+        p: HealthcareProviderCreate,
+        db: AsyncSession = Depends(get_db_session),
+        current_user=Depends(get_current_user)  # ✅ Secure: Admin/Staff only in production
 ):
-    providers = await _maybe_await_with_session(get_providers, db, skip, limit, service_type, name)
-    return providers
+    try:
+        new_provider = await create_provider(db, p)
+        await db.commit()  # ✅ Persistence: Required for AsyncSession
+        await db.refresh(new_provider)
+        return new_provider
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Failed to create provider: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error creating provider profile")
 
 
-#  GET ONE
+# -------------------------------------------------
+# LIST/SEARCH PROVIDERS (Public or Protected)
+# -------------------------------------------------
+@router.get("/", response_model=List[Union[HealthcareProvider, HealthcareProviderShort]])
+async def list_all(
+        skip: int = 0,
+        limit: int = 20,
+        service_type: Optional[str] = None,
+        name: Optional[str] = None,
+        db: AsyncSession = Depends(get_db_session)
+):
+    """
+    Search providers with autocomplete support.
+    Example: /v1/providers/?name=General
+    """
+    try:
+        # Search logic usually doesn't need explicit commits
+        providers = await get_providers(db, skip, limit, service_type, name)
+        return providers
+    except Exception as e:
+        logger.error(f"Search failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Search service temporarily unavailable")
+
+
+# -------------------------------------------------
+# GET SINGLE PROVIDER
+# -------------------------------------------------
 @router.get("/{provider_id}", response_model=HealthcareProvider)
-async def get_one(provider_id: int, db: AsyncSession = Depends(get_async_session)):
-    provider = await _maybe_await_with_session(get_provider_by_id, db, provider_id)
+async def get_one(provider_id: int, db: AsyncSession = Depends(get_db_session)):
+    provider = await get_provider_by_id(db, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
     return provider
 
 
-#  UPDATE
+# -------------------------------------------------
+# UPDATE PROVIDER (Protected)
+# -------------------------------------------------
 @router.put("/{provider_id}", response_model=HealthcareProvider)
-async def update(provider_id: int, data: HealthcareProviderUpdate, db: AsyncSession = Depends(get_async_session)):
-    updated = await _maybe_await_with_session(update_provider, db, provider_id, data.model_dump(exclude_unset=True))
-    if not updated:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    return updated
+async def update(
+        provider_id: int,
+        data: HealthcareProviderUpdate,
+        db: AsyncSession = Depends(get_db_session),
+        current_user=Depends(get_current_user)
+):
+    try:
+        # Use exclude_unset=True so we don't overwrite existing data with Nulls
+        updated = await update_provider(db, provider_id, data.model_dump(exclude_unset=True))
+        if not updated:
+            raise HTTPException(status_code=404, detail="Provider not found")
+
+        await db.commit()
+        return updated
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Update failed for provider {provider_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update provider")
 
 
-#  DELETE
+# -------------------------------------------------
+# DELETE PROVIDER (Protected)
+# -------------------------------------------------
 @router.delete("/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete(provider_id: int, db: AsyncSession = Depends(get_async_session)):
-    deleted = await _maybe_await_with_session(delete_provider, db, provider_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    return None
+async def delete(
+        provider_id: int,
+        db: AsyncSession = Depends(get_db_session),
+        current_user=Depends(get_current_user)
+):
+    try:
+        deleted = await delete_provider(db, provider_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Provider not found")
+
+        await db.commit()
+        return None
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Internal server error during deletion")

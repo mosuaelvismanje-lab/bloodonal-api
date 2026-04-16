@@ -1,48 +1,35 @@
 import sys
+import os
 from pathlib import Path
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
-from sqlalchemy import create_engine
+from sqlalchemy import pool, create_engine
 from alembic import context
 
-# -------------------------
-# Add project root to PATH
-# -------------------------
+# 1. Add project root to PATH
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-# -------------------------
-# Load models & metadata
-# -------------------------
-from app.database import Base
+# 2. Import tools
+from app.database import Base, get_cleaned_url
+from app.config import settings
 import app.models  # noqa: F401
 
-target_metadata = Base.metadata
-
-# -------------------------
-# Alembic Config
-# -------------------------
+# 3. Alembic Config setup
 config = context.config
-
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# -------------------------
-# Use sync DATABASE_URL from environment or settings
-# -------------------------
-from app.config import settings
-import os
+target_metadata = Base.metadata
 
-DATABASE_URL = os.getenv("DATABASE_URL") or settings.DATABASE_URL
-if DATABASE_URL.startswith("postgresql+asyncpg://"):
-    # Convert async URL to sync URL for Alembic
-    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+# ---------------------------------------------------------------------
+# 4. Standardized URL Logic for Alembic (Sync)
+# ---------------------------------------------------------------------
+# Use the same verified password logic as the rest of the app
+RAW_URL = os.getenv("DATABASE_URL") or settings.DATABASE_URL
+CLEAN_SYNC_URL = get_cleaned_url(RAW_URL, is_async=False)
 
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+config.set_main_option("sqlalchemy.url", CLEAN_SYNC_URL)
 
-# -------------------------
-# OFFLINE MODE
-# -------------------------
 def run_migrations_offline():
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
@@ -55,13 +42,17 @@ def run_migrations_offline():
     with context.begin_transaction():
         context.run_migrations()
 
-# -------------------------
-# ONLINE MODE
-# -------------------------
 def run_migrations_online():
+    # Fix for Neon: Synchronous connections (like Alembic)
+    # need sslmode passed in connect_args
+    connect_args = {}
+    if "neon.tech" in CLEAN_SYNC_URL:
+        connect_args = {"sslmode": "require"}
+
     connectable = create_engine(
-        config.get_main_option("sqlalchemy.url"),
+        CLEAN_SYNC_URL,
         poolclass=pool.NullPool,
+        connect_args=connect_args
     )
 
     with connectable.connect() as connection:
@@ -74,9 +65,6 @@ def run_migrations_online():
         with context.begin_transaction():
             context.run_migrations()
 
-# -------------------------
-# Execute
-# -------------------------
 if context.is_offline_mode():
     run_migrations_offline()
 else:

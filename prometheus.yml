@@ -1,0 +1,42 @@
+global:
+  scrape_interval: 15s     # How often to pull data
+  evaluation_interval: 15s # How often to evaluate alerting rules
+  external_labels:
+    monitor: 'bloodonal-monitor'
+    env: 'production'
+
+# ---------------------------------------------------------
+# ✅ ALERTING (Optional but recommended for 2026)
+# ---------------------------------------------------------
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+scrape_configs:
+  # 1. Monitor the Bloodonal FastAPI Server
+  - job_name: 'bloodonal-api'
+    metrics_path: '/v1/monitoring/metrics'
+    scheme: 'http'
+    # Relabeling allows you to distinguish between different API instances
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'api-main'
+    static_configs:
+      - targets: ['api:8000']
+
+  # 2. Self-Monitoring (Prometheus monitoring itself)
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 3. NEW: PostgreSQL Monitoring (If using postgres-exporter)
+  # - job_name: 'postgres'
+  #   static_configs:
+  #     - targets: ['postgres-exporter:9187']
+
+  # 4. NEW: Redis Monitoring (If using redis-exporter)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']

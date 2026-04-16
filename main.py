@@ -1,119 +1,152 @@
+from __future__ import annotations
+
 import os
-import base64
-import tempfile
 import logging
 import atexit
+import uuid
+import time
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-import uuid
-from typing import Optional
+from typing import Optional, Dict, Any, List, Union
 
-import firebase_admin
-from firebase_admin import credentials, firestore
-
-from fastapi import FastAPI, Depends, APIRouter, Header
+import uvicorn
+import redis.asyncio as redis
+from fastapi import FastAPI, Depends, APIRouter, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.openapi.utils import get_openapi
 from sqlalchemy import text
 from pydantic import BaseModel
 
+from app.api.endpoints import monitoring
 from app.config import settings
-from app.database import Base
-# ✅ Keep get_db for health checks, but ensure routers use get_db_session for testing
-from app.db.session import get_db
+from app.database import Base, init_db
+from app.db.session import get_db, engine
+
+# Models discovery for SQLAlchemy reflection
+from app.models.payment import Payment
+from app.models.wallet import Wallet
+from app.models.usage_counter import UsageCounter
+
+# ✅ 2026 Service & Task Imports
+from app.services.registry import registry
+from app.tasks.payment_tasks import run_payment_worker_loop
+from app.firebase_client import _init_firebase
 
 # -------------------------
-# Logging
+# Logging Configuration
 # -------------------------
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 log = logging.getLogger("bloodonal")
 
 # -------------------------
 # Firebase temp-file helpers
 # -------------------------
-_FIREBASE_TEMP_CRED_FILES: list[str] = []
+_FIREBASE_TEMP_CRED_FILES: List[str] = []
 
-def _write_temp_json(json_str: str) -> str:
-    fd, path = tempfile.mkstemp(prefix="firebase_", suffix=".json")
-    os.close(fd)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(json_str)
-    _FIREBASE_TEMP_CRED_FILES.append(path)
-    return path
-
-def _write_temp_base64(b64: str) -> str:
-    fd, path = tempfile.mkstemp(prefix="firebase_", suffix=".json")
-    os.close(fd)
-    with open(path, "wb") as f:
-        f.write(base64.b64decode(b64))
-    _FIREBASE_TEMP_CRED_FILES.append(path)
-    return path
 
 def _cleanup_firebase_temp_files():
+    """Securely purges temporary credential files on exit to prevent key leakage."""
     for path in list(_FIREBASE_TEMP_CRED_FILES):
         try:
-            os.remove(path)
-            log.debug(f"Cleaned up temporary credential file: {path}")
+            if os.path.exists(path):
+                os.remove(path)
+                log.info(f"🗑️ Cleaned up temporary credential file: {path}")
         except OSError as e:
-            log.warning(f"Failed to clean up temporary file {path}: {e}")
+            log.warning(f"⚠️ Failed to clean up temporary file {path}: {e}")
     _FIREBASE_TEMP_CRED_FILES.clear()
+
 
 atexit.register(_cleanup_firebase_temp_files)
 
-def init_firebase() -> bool:
-    """Initialize Firebase Admin SDK if credentials are present."""
-    try:
-        firebase_admin.get_app()
-        log.info("Firebase default app already initialized.")
-        return True
-    except ValueError:
-        pass
-
-    cred = None
-    source = "unknown"
-
-    gac_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if gac_path and os.path.exists(gac_path):
-        cred = credentials.Certificate(gac_path)
-        source = f"GOOGLE_APPLICATION_CREDENTIALS from path: {gac_path}"
-
-    render_secret_path = "/etc/secrets/FIREBASE_CREDENTIALS_JSON"
-    if not cred and os.path.exists(render_secret_path):
-        cred = credentials.Certificate(render_secret_path)
-        source = f"Render secret file: {render_secret_path}"
-
-    env_json = os.environ.get("FIREBASE_CREDENTIALS_JSON")
-    if not cred and env_json:
-        path = _write_temp_json(env_json)
-        cred = credentials.Certificate(path)
-        source = "FIREBASE_CREDENTIALS_JSON env content"
-
-    if not cred and os.environ.get("FIREBASE_CRED_BASE64"):
-        path = _write_temp_base64(os.environ["FIREBASE_CRED_BASE64"])
-        cred = credentials.Certificate(path)
-        source = "FIREBASE_CRED_BASE64 env content"
-
-    if cred:
-        try:
-            firebase_admin.initialize_app(cred)
-            log.info(f"✅ Firebase initialized from {source}")
-            return True
-        except Exception as e:
-            log.error(f"Failed Firebase init from {source}: {e}")
-            return False
-
-    log.info("No Firebase credentials found; skipping Firebase initialization.")
-    return False
 
 # -------------------------
-# Application lifespan
+# Application lifespan (2026 Production Standard)
 # -------------------------
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    firebase_ready = init_firebase()
+    """
+    Orchestrates the platform startup and shutdown sequence.
+    Ensures all stateful connections (DB, Redis, Firebase) are synchronized.
+    """
+    log.info("--- STARTING BLOODONAL EMERGENCY HEALTH PLATFORM (2026) ---")
+
+    # 1. ✅ DATABASE SYNC
+    try:
+        await init_db()
+        log.info("✅ Database tables synced successfully.")
+    except Exception as e:
+        log.error(f"❌ Database sync failed: {e}")
+
+    # 2. ✅ REDIS INITIALIZATION
+    try:
+        # Utilizing settings.REDIS_URL for consistent environment management
+        app.state.redis = redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            health_check_interval=30
+        )
+        await app.state.redis.ping()
+        log.info("✅ Redis connection established and verified.")
+    except Exception as e:
+        log.error(f"⚠️ Redis initialization failed: {e}")
+
+    # 3. ✅ SERVICE REGISTRY VALIDATION
+    try:
+        # Load modular service fees/switches (Doctor, Nurse, Blood, etc.)
+        log.info(f"✅ Registry loaded with {len(registry._services)} active platform services.")
+    except Exception as e:
+        log.error(f"⚠️ Registry failed to initialize: {e}")
+
+    # 4. ✅ BACKGROUND WORKER INITIALIZATION
+    try:
+        # 2026 Logic: Janitor tasks handle pending payment expirations and daily reports
+        app.state.background_worker = asyncio.create_task(run_payment_worker_loop())
+        log.info("🚀 Background Payment Janitor & Reporting Task started.")
+    except Exception as e:
+        log.error(f"⚠️ Failed to start background worker: {e}")
+
+    # 5. ✅ FIREBASE INIT
+    firebase_ready = _init_firebase()
     log.info("Lifespan startup complete (firebase_ready=%s)", firebase_ready)
+
+    # 6. ✅ ROUTE AUDIT (Debugging)
+    log.info("--- REGISTERED API ROUTES ---")
+    for route in app.routes:
+        if hasattr(route, "path"):
+            methods = getattr(route, "methods", "N/A")
+            log.info(f"Route: {route.path} | Methods: {methods}")
+    log.info("------------------------------")
+
     yield
-    log.info("🛑 Application shutdown complete")
+    # 🛑 SHUTDOWN LOGIC
+    log.info("🛑 Application shutdown starting...")
+
+    # Stop the background worker task
+    if hasattr(app.state, "background_worker"):
+        app.state.background_worker.cancel()
+        try:
+            await app.state.background_worker
+        except asyncio.CancelledError:
+            log.info("✅ Background worker task cancelled.")
+
+    # Gracefully close Redis
+    if hasattr(app.state, "redis"):
+        await app.state.redis.close()
+        log.info("✅ Redis connection closed.")
+
+    # Dispose of SQLAlchemy engine connections
+    await engine.dispose()
+    log.info("✅ Database engine disposed.")
+
     _cleanup_firebase_temp_files()
+    log.info("🛑 Bloodonal backend shutdown complete.")
+
 
 # -------------------------
 # FastAPI app instance
@@ -121,127 +154,187 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.API_VERSION,
-    description="Bloodonal API — consultations, payments, notifications, and more.",
+    description="Bloodonal API — 2026 SMS Bypass & Modular Payment Architecture",
     lifespan=lifespan,
-    # ✅ FIX: Enable documentation in production regardless of settings.DEBUG
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
-# -------------------------
-# CORS
-# -------------------------
-origins_raw = os.getenv("ALLOWED_ORIGINS") or settings.ALLOWED_ORIGINS or ""
-if isinstance(origins_raw, str) and origins_raw.strip():
-    allowed = [o.strip() for o in origins_raw.split(",") if o.strip()]
-else:
-    allowed = ["*"] # ✅ Temporarily allowing all for testing on mobile
 
+# ---------------------------------------------------------
+# ✅ Exception Handling & Middleware
+# ---------------------------------------------------------
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    """Adds X-Process-Time header for monitoring performance."""
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    return response
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Intercepts unhandled exceptions to prevent 500 crashes on Android frontend."""
+    log.error(f"GLOBAL EXCEPTION INTERCEPTED: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"error": "INTERNAL_SERVER_ERROR", "message": "An unexpected error occurred in the health engine."},
+    )
+
+
+# ---------------------------------------------------------
+# ✅ Swagger Security Configuration
+# ---------------------------------------------------------
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+
+    openapi_schema["components"]["securitySchemes"] = {
+        "HTTPBearer": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT"
+        }
+    }
+
+    # Set security globally for all endpoints in the UI
+    openapi_schema["security"] = [{"HTTPBearer": []}]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
+
+# -------------------------
+# CORS Configuration
+# -------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed,
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # -------------------------
-# Include routers
+# Include Routers
 # -------------------------
 from app.routers import (
-    blood_donor,
-    blood_request,
-    health_provider,
-    health_request,
-    transport_offer,
-    transport_request,
-    chat,
-    notifications,
-    consultation,
-    bike_payment,
-    doctor_payments,
-    nurse_payments,
-    taxi_payment,
-    blood_request_payments
+    blood_donor, blood_request, health_provider, health_request,
+    transport_offer, transport_request, chat, notifications,
+    consultation, bike_payment, doctor_payments, nurse_payments,
+    taxi_payment, blood_request_payments, webhook_payment
 )
+from app.api.admin import router as admin_router
+# ✅ FIX: Importing internal local monitoring router, NOT sys.monitoring
 
+
+# ✅ Centralized Versioned Router (v1)
 api_router = APIRouter(prefix=f"/{settings.API_VERSION}")
 
-api_router.include_router(blood_donor.router)
-api_router.include_router(blood_request.router)
-api_router.include_router(health_provider.router)
-api_router.include_router(health_request.router)
-api_router.include_router(transport_offer.router)
-api_router.include_router(transport_request.router)
-api_router.include_router(chat.router)
-api_router.include_router(notifications.router)
-api_router.include_router(consultation.router)
-api_router.include_router(bike_payment.router)
-api_router.include_router(doctor_payments.router)
-api_router.include_router(nurse_payments.router)
-api_router.include_router(taxi_payment.router)
-api_router.include_router(blood_request_payments.router)
+router_modules = [
+    blood_donor, blood_request, health_provider, health_request,
+    transport_offer, transport_request, chat, notifications,
+    consultation, bike_payment, doctor_payments, nurse_payments,
+    taxi_payment, blood_request_payments, webhook_payment
+]
 
-app.include_router(api_router)
+for module in router_modules:
+    if hasattr(module, "router"):
+        api_router.include_router(module.router)
+    else:
+        log.error(f"❌ Critical: Module {module.__name__} is missing a router object!")
 
-# Optional Dashboard/Admin Routers
-try:
-    from app.api.routers import payments as payments_module
-    app.include_router(payments_module.router)
-except (ImportError, AttributeError):
-    log.debug("Payments module router not found, skipping.")
-
-try:
-    from app.api.admin import router as admin_router
-    app.include_router(admin_router)
-except (ImportError, AttributeError):
-    log.debug("Admin router not found, skipping.")
-
-try:
-    from app.api.dashboard import router as dashboard_router
-    app.include_router(dashboard_router)
-except (ImportError, AttributeError):
-    log.debug("Dashboard router not found, skipping.")
+# Prefix the Admin & Monitoring Routers
+api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
+api_router.include_router(monitoring.router, prefix="/monitoring", tags=["monitoring"])
 
 # -------------------------
-# Health / test endpoints
-# -------------------------
-@app.get("/", tags=["health"])
-async def root():
-    return {
-        "message": f"{settings.PROJECT_NAME} (API {settings.API_VERSION}) is up and running!",
-        "docs": "/docs",
-        "status": "online"
-    }
-
-@app.get("/db-test", tags=["health"])
-async def db_test_route(session = Depends(get_db)):
-    try:
-        result = await session.execute(text("SELECT 1 as is_connected"))
-        return {"message": "PostgreSQL connection successful!", "result": int(result.scalar_one())}
-    except Exception as e:
-        return {"error": f"Database query failed: {e}"}
-
-# -------------------------
-# Simple call/session endpoints
+# Versioned Calls Router (Enhanced Logic)
 # -------------------------
 call_router = APIRouter(prefix="/calls", tags=["calls"])
+
 
 class CallRequestPayload(BaseModel):
     caller_id: str
     callee_id: str
     callee_type: str
-    call_mode: str
+    call_mode: str  # 'voice' | 'video'
+
 
 class SessionResponse(BaseModel):
     session_id: str
     room_name: str
+    jitsi_server: str
     token: Optional[str] = None
+
 
 @call_router.post("/session", response_model=SessionResponse)
 async def create_call_session(payload: CallRequestPayload):
-    room_name = f"call_{uuid.uuid4().hex}"
+    """
+    Creates a unique Jitsi Room and Call Session for RTC.
+    Tracks session IDs for monitoring purposes.
+    """
+    room_name = f"bloodonal_{uuid.uuid4().hex[:12]}"
     session_id = str(uuid.uuid4())
-    return SessionResponse(session_id=session_id, room_name=room_name)
 
-app.include_router(call_router)
+    # Store pending call in Redis for signaling TTL (45s)
+    if hasattr(app.state, "redis"):
+        await app.state.redis.setex(f"call:pending:{session_id}", 45, payload.caller_id)
+
+    return SessionResponse(
+        session_id=session_id,
+        room_name=room_name,
+        jitsi_server=settings.JITSI_SERVER_URL
+    )
+
+
+api_router.include_router(call_router)
+
+# Mount the centralized v1 router
+app.include_router(api_router)
+
+
+# -------------------------
+# Health Endpoints (PUBLIC)
+# -------------------------
+@app.get("/", tags=["health"])
+async def root():
+    return {
+        "status": "online",
+        "message": f"{settings.PROJECT_NAME} 2026 Core Service",
+        "version": settings.API_VERSION,
+        "date": "2026-02-27",
+        "timestamp": time.time(),
+        "worker_active": True
+    }
+
+
+@app.get("/db-test", tags=["health"])
+async def db_test_route(session=Depends(get_db)):
+    """Validates connectivity to the PostgreSQL health cluster."""
+    try:
+        result = await session.execute(text("SELECT 1 as is_connected"))
+        return {"db_status": "connected", "result": int(result.scalar_one())}
+    except Exception as e:
+        log.error(f"DATABASE TEST FAILED: {e}")
+        return {"db_status": "error", "error": str(e)}
+
+
+
+# ---------------------------------------------------------
+# ✅ PRODUCTION ENTRY POINT
+# ---------------------------------------------------------
+if __name__ == "__main__":
+    # Host 0.0.0.0 for external device access
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

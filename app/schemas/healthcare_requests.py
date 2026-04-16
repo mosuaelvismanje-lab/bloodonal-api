@@ -1,40 +1,65 @@
-from pydantic import BaseModel, ConfigDict  # ✅ Added ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 from datetime import datetime
 from app.models.healthcare_provider import ProviderType
 
 
 class HealthcareRequestBase(BaseModel):
-    # ✅ Set config at the base so Create and Request both inherit it
-    model_config = ConfigDict(from_attributes=True)
+    """
+    Base schema for healthcare requests.
+    """
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "example": {
+                "requester_name": "Mich B",
+                "phone": "670123456",
+                "city": "Limbe",
+                "description": "Patient needs home nursing care.",
+                "assigned_provider_id": None,
+                "status": "pending"
+            }
+        }
+    )
 
     requester_name: str
     phone: str
-    city: Optional[str] = None
+    city: str
     description: Optional[str] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    assigned_provider_id: Optional[int] = None
-    status: Optional[str] = "pending"
+    assigned_provider_id: Optional[int] = Field(default=None)
+    status: Optional[str] = Field(default="pending")
 
 
 class HealthcareRequestCreate(HealthcareRequestBase):
+    """
+    Used when a patient submits a new request.
+    """
     pass
 
 
-# Optional nested provider info
 class HealthcareProviderInfo(BaseModel):
-    # ✅ Modern Pydantic V2 Configuration
+    """
+    Simplified provider info returned to the user.
+    """
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     name: str
     service_type: Optional[ProviderType] = None
+    phone: Optional[str] = None
 
 
 class HealthcareRequest(HealthcareRequestBase):
+    """
+    The final representation of a request returned by the API.
+    Includes timestamps for the request lifecycle.
+    """
     id: int
     created_at: datetime
-    provider: Optional[HealthcareProviderInfo] = None
 
-    # ❌ REMOVED: class Config block (now inherited from HealthcareRequestBase)
+    # ✅ Added these to show the automatic status timing to the user
+    assigned_at: Optional[datetime] = None
+    updated_at: datetime
+
+    # Populated by SQLAlchemy 'selectin' loading
+    provider: Optional[HealthcareProviderInfo] = None

@@ -1,75 +1,81 @@
-# app/crud/blood_donor.py
-
 from typing import List, Optional
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.models.blood_donor import BloodDonor
 from app.schemas.blood_donors import BloodDonorCreate, BloodDonorUpdate
 
-def create_donor(db: Session, donor: BloodDonorCreate) -> BloodDonor:
+
+async def create_donor(db: AsyncSession, donor: BloodDonorCreate) -> BloodDonor:
     """
-    Create a new BloodDonor record.
-    Raises IntegrityError if, e.g., phone uniqueness is violated.
+    Create a new BloodDonor record asynchronously.
+    Payload automatically excludes lat/lon based on the updated Pydantic schema.
     """
-    payload = donor.model_dump() if hasattr(donor, "model_dump") else donor.model_dump()
-    obj = BloodDonor(**payload)
+    # ✅ Using model_dump() is perfect here—it ensures we only pass fields
+    # that actually exist in the schema to the database model.
+    obj = BloodDonor(**donor.model_dump())
     db.add(obj)
     try:
-        db.commit()
+        await db.commit()
+        await db.refresh(obj)
     except IntegrityError:
-        db.rollback()
+        await db.rollback()
         raise
-    db.refresh(obj)
     return obj
 
-def get_donors(db: Session, skip: int = 0, limit: int = 100) -> List[BloodDonor]:
-    """
-    Return a list of donors with offset and limit.
-    """
-    return db.query(BloodDonor).offset(skip).limit(limit).all()
 
-def get_donor(db: Session, donor_id: int) -> Optional[BloodDonor]:
+async def get_donors(db: AsyncSession, skip: int = 0, limit: int = 100) -> List[BloodDonor]:
     """
-    Fetch a single donor by ID. Returns None if not found.
+    Return a list of donors using the Async Select pattern.
     """
-    return db.query(BloodDonor).filter(BloodDonor.id == donor_id).first()
+    result = await db.execute(
+        select(BloodDonor).offset(skip).limit(limit)
+    )
+    return result.scalars().all()
 
-def update_donor(db: Session, donor_id: int, donor_update: BloodDonorUpdate) -> Optional[BloodDonor]:
+
+async def get_donor(db: AsyncSession, donor_id: int) -> Optional[BloodDonor]:
     """
-    Update fields of an existing donor. Only fields set in donor_update are changed.
-    Returns the updated instance, or None if not found.
-    Raises IntegrityError on duplicate phone, etc.
+    Fetch a single donor by ID using Async Select.
     """
-    donor = get_donor(db, donor_id)
+    result = await db.execute(
+        select(BloodDonor).where(BloodDonor.id == donor_id)
+    )
+    return result.scalars().first()
+
+
+async def update_donor(db: AsyncSession, donor_id: int, donor_update: BloodDonorUpdate) -> Optional[BloodDonor]:
+    """
+    Update an existing donor. Only fields explicitly set in the request are changed.
+    """
+    donor = await get_donor(db, donor_id)
     if not donor:
         return None
 
-    data = (
-        donor_update.model_dump(exclude_unset=True)
-        if hasattr(donor_update, "model_dump")
-        else donor_update.model_dump(exclude_unset=True)
-    )
+    # ✅ exclude_unset=True ensures we don't overwrite existing data with 'None'
+    data = donor_update.model_dump(exclude_unset=True)
     for field, value in data.items():
         setattr(donor, field, value)
+
     db.add(donor)
     try:
-        db.commit()
+        await db.commit()
+        await db.refresh(donor)
     except IntegrityError:
-        db.rollback()
+        await db.rollback()
         raise
-    db.refresh(donor)
     return donor
 
-def delete_donor(db: Session, donor_id: int) -> bool:
+
+async def delete_donor(db: AsyncSession, donor_id: int) -> bool:
     """
-    Delete a donor by ID.
-    Returns True if deleted, False if not found.
+    Delete a donor by ID. Returns True if deleted, False if not found.
     """
-    donor = get_donor(db, donor_id)
+    donor = await get_donor(db, donor_id)
     if not donor:
         return False
-    db.delete(donor)
-    db.commit()
-    return True
 
+    await db.delete(donor)
+    await db.commit()
+    return True

@@ -1,33 +1,36 @@
-# app/routers/consultation.py
 import logging
+import uuid
+from typing import Annotated, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Annotated
 
-from app.database import get_async_session
-from app.api.dependencies import get_current_user_id
+# ✅ Production Standard: Secure identity and database session
+from app.api.dependencies import get_current_user, get_db_session
 from app.domain.usecases import ConsultationUseCase
 from app.domain.consultation_models import RequestResponse, ChannelType, UserRoles
 
-from app.infrastructure.repositories import SQLAlchemyUsageRepository
+# ✅ Infrastructure: Using updated repository paths
+from app.repositories.usage_repo import SQLAlchemyUsageRepository
 from app.infrastructure.jitsi import JitsiGateway
-from app.adapters.mtn_gateway import MtnGateway
+from app.gateways.mtn_momo_adapter import MockAdapter
 from app.adapters.chat_gateway import DummyChatGateway
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/consultation", tags=["consultation"])
+# ✅ Versioning: Prefix set to /v1/consultation for production API standards
+router = APIRouter(prefix="/v1/consultation", tags=["consultation"])
 
 
 async def get_consultation_usecase(
-    session: AsyncSession = Depends(get_async_session),
+        session: AsyncSession = Depends(get_db_session),
 ) -> ConsultationUseCase:
     """
-    Dependency that constructs a ConsultationUseCase wired with concrete adapters/repositories.
-    The AsyncSession is provided by get_async_session and its lifecycle is managed by FastAPI.
+    Dependency provider for the Consultation UseCase.
+    In production, swap MockAdapter for real MTN/Orange Momo Gateways.
     """
     usage_repo = SQLAlchemyUsageRepository(session)
-    payment_gateway = MtnGateway()
+    payment_gateway = MockAdapter()
     call_gateway = JitsiGateway()
     chat_gateway = DummyChatGateway()
 
@@ -45,53 +48,59 @@ async def get_consultation_usecase(
     status_code=status.HTTP_200_OK,
 )
 async def start_consultation(
-    channel_type: ChannelType,
-    recipient_id: str,
-    recipient_role: UserRoles,
-    phone_number: Annotated[str, Query(..., description="Caller phone number")],
-    user_id: Annotated[str, Depends(get_current_user_id)],
-    use_case: ConsultationUseCase = Depends(get_consultation_usecase),
+        channel_type: ChannelType,
+        recipient_id: str,
+        recipient_role: UserRoles,
+        phone_number: Annotated[str, Query(..., description="User's MoMo number")],
+        use_case: Annotated[ConsultationUseCase, Depends(get_consultation_usecase)],
+        db: AsyncSession = Depends(get_db_session),
+        # ✅ Production Security: user_id is extracted from the Firebase JWT
+        current_user=Depends(get_current_user),
+        amount: Annotated[int, Query(description="Payment amount")] = 500,
+        idempotency_key: Annotated[Optional[str], Query(description="Unique idempotency key")] = None,
 ) -> RequestResponse:
     """
-    Start a consultation using the provided ConsultationUseCase.
-
-    Path Parameters:
-    - channel_type: enum (CHAT, VOICE, VIDEO)
-    - recipient_id: ID of recipient (doctor, nurse, etc.)
-    - recipient_role: recipient role enum
-
-    Query Parameters:
-    - phone_number: string, caller's phone number
-
-    Dependencies:
-    - user_id: injected from auth dependency
-    - use_case: ConsultationUseCase
+    🚀 Production Logic Flow:
+    1. Validates User Identity via Bearer Token.
+    2. Ensures a UsageCounter exists for the authenticated UID.
+    3. Executes the UseCase (checks free quota -> handles payment -> returns Jitsi link).
+    4. Commits the transaction to persist usage counts.
     """
+    user_id = current_user.uid
+
     try:
-        # Call the domain use case to handle free quota or payment
+        # ✅ JIT Provisioning: Ensure user exists in the usage_counters table
+        usage_repo = SQLAlchemyUsageRepository(db)
+        await usage_repo.get_or_create_counter(user_id)
+
+        # ✅ Execute Business Logic
         result: RequestResponse = await use_case.handle(
             caller_id=user_id,
             recipient_id=recipient_id,
             caller_phone=phone_number,
             channel=channel_type,
             recipient_role=recipient_role,
+            amount=float(amount),
+            idempotency_key=idempotency_key or f"cons-{uuid.uuid4().hex[:12]}"
         )
+
+        # ✅ Persistence: Commit changes (usage increment) to Neon Postgres
+        await db.commit()
         return result
 
     except ConsultationUseCase.FreeQuotaExceeded as e:
-        # User exceeded free quota
-        logger.info("Free quota exceeded for user %s: %s", user_id, str(e))
-        return RequestResponse(success=False, message=str(e))
-
-    except ConsultationUseCase.NotFoundError as e:
-        # Target not found
-        logger.warning("Consultation target not found: %s (user=%s)", recipient_id, user_id)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        logger.info(f"Free quota exceeded for {user_id}: {e}")
+        # 402 is the industry standard for payment required
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=str(e)
+        )
 
     except Exception as exc:
-        # Unexpected error
-        logger.exception("Unexpected error while starting consultation (user=%s)", user_id)
+        # ✅ Rollback: Ensure data integrity on failure
+        await db.rollback()
+        logger.exception(f"Consultation failed for user {user_id}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to start consultation at this time",
-        ) from exc
+            detail="An internal error occurred while processing the consultation."
+        )

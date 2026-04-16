@@ -1,34 +1,39 @@
-# app/crud/call_sessions.py
 import uuid
 import secrets
+from datetime import datetime, timezone
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select
+
 from app.models.call_session import CallSession, CallMode, CallStatus
 
 
 async def create_call_session(
-    db: AsyncSession,
-    caller_id: str,
-    recipient_ids: Optional[List[str]],
-    callee_type: Optional[str],
-    call_mode: CallMode,
-    metadata: Optional[dict] = None,
-    jitsi_room_prefix: str = "bloodonal"
+        db: AsyncSession,
+        caller_id: str,
+        recipient_ids: Optional[List[str]],
+        callee_type: Optional[str],
+        call_mode: CallMode,
+        metadata: Optional[dict] = None,
+        jitsi_room_prefix: str = "bloodonal"
 ) -> CallSession:
+    """
+    Creates a new CallSession using AsyncSession.
+    """
     session_uuid = uuid.uuid4().hex
     room_name = f"{jitsi_room_prefix}-{session_uuid}"
-    token = secrets.token_urlsafe(32)  # placeholder token if you need one
+    token = secrets.token_urlsafe(32)
 
     cs = CallSession(
         session_id=session_uuid,
         room_name=room_name,
         caller_id=caller_id,
-        callee_ids=recipient_ids or ([] if recipient_ids is not None else None),
+        # Ensure it's a list for JSON compatibility in PostgreSQL
+        callee_ids=recipient_ids if recipient_ids is not None else [],
         callee_type=callee_type,
         call_mode=call_mode,
         token=token,
-        status=CallStatus.ACTIVE
+        status=CallStatus.ACTIVE  # ✅ Direct Enum usage
     )
 
     db.add(cs)
@@ -38,18 +43,31 @@ async def create_call_session(
 
 
 async def end_call_session(
-    db: AsyncSession,
-    session_id: str,
-    ended_by: Optional[str] = None,
-    reason: Optional[str] = None
+        db: AsyncSession,
+        session_id: str,
+        ended_by: Optional[str] = None,
+        reason: Optional[str] = None
 ) -> Optional[CallSession]:
-    q = await db.execute(select(CallSession).where(CallSession.session_id == session_id))
-    cs = q.scalars().first()
+    """
+    Finds and marks a call session as ended.
+    """
+    # 1. Fetch the session using the async select pattern
+    result = await db.execute(
+        select(CallSession).where(CallSession.session_id == session_id)
+    )
+    cs = result.scalars().first()
+
     if not cs:
         return None
-    cs.status = CallSession.status.type.enum_class.ENDED if hasattr(CallSession, "status") else "ended"
-    from datetime import datetime
-    cs.ended_at = datetime.utcnow()
+
+    # 2. Update Status and Timestamp
+    # ✅ Using the Enum class directly is safer than complex introspection
+    cs.status = CallStatus.ENDED
+
+    # ✅ datetime.utcnow() is deprecated; use timezone-aware now()
+    cs.ended_at = datetime.now(timezone.utc)
+
+    # 3. Commit and Refresh
     await db.commit()
     await db.refresh(cs)
     return cs

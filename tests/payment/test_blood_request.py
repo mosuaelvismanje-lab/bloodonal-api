@@ -2,98 +2,125 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from fastapi import status
 from main import app
-from app.api.dependencies import get_current_user, get_db_session
+from app.api.dependencies import get_current_user, get_db
+from app.models.payment import PaymentStatus
 from unittest.mock import AsyncMock
+from datetime import datetime, timezone
+
 
 # -------------------------
-# 1. Setup localized mocks (Same as Doctor Pattern)
+# 1. Clean Mocking Pattern
 # -------------------------
 class MockUser:
-    def __init__(self):
-        self.uid = "blood_test_user_123"
+    id = "blood_test_user_123"
+    uid = "blood_test_user_123"
+
 
 async def override_get_current_user():
     return MockUser()
 
-async def override_get_db_session():
-    # Yield a mock db session to satisfy the dependency
-    yield AsyncMock()
 
-# Apply overrides globally for this test module
+async def override_get_db():
+    mock_session = AsyncMock()
+    # Ensure the mock session behaves like an AsyncSession in 2026
+    yield mock_session
+
+
+# Apply overrides globally
 app.dependency_overrides[get_current_user] = override_get_current_user
-app.dependency_overrides[get_db_session] = override_get_db_session
+app.dependency_overrides[get_db] = override_get_db
 
-@pytest.mark.asyncio
-async def test_pay_blood_request_success(monkeypatch):
+
+@pytest.fixture
+async def client():
     """
-    Test successful blood request payment initiation.
-    Fully aligned with Doctor/Bike payload requirements.
+    Standardized 2026 AsyncClient fixture using ASGITransport.
     """
-
-    # 2. Mock ConsultationUseCase.handle (Domain logic)
-    async def mock_handle(*args, **kwargs):
-        # We return a string ID that the router wraps in "transaction:{tx_id}"
-        return "mock_tx_uuid_789"
-
-    monkeypatch.setattr(
-        "app.domain.usecases.ConsultationUseCase.handle",
-        mock_handle
-    )
-
-    # 3. Valid Payload (ADDED user_id and phone to align with Schema)
-    payload = {
-        "user_id": "blood_test_user_123",
-        "phone": "670000000"
-    }
-
-    # 4. Execute Request
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.post(
-            "/v1/payments/blood-request",
-            json=payload,
-            headers={"X-Idempotency-Key": "blood-key-123"}
-        )
+        yield ac
 
-    # 5. Assertions
+
+# -------------------------
+# 2. Optimized Test Cases
+# -------------------------
+
+@pytest.mark.asyncio
+async def test_pay_blood_request_success(client, monkeypatch):
+    """
+    Test FREE PATH using localized monkeypatch.
+    """
+    from app.schemas.payment import PaymentResponseOut
+
+    mock_out = PaymentResponseOut(
+        success=True,
+        status=PaymentStatus.SUCCESS,
+        message="Free usage applied successfully",
+        reference="FREE-TEST-REF",
+        ussd_string=None,
+        expires_at=datetime.now(timezone.utc)
+    )
+
+    # Simplified mock using return_value for non-complex logic
+    monkeypatch.setattr(
+        "app.services.payment_service.PaymentService.process_payment",
+        AsyncMock(return_value=mock_out)
+    )
+
+    response = await client.post(
+        "/v1/blood-request-payments/",
+        json={"phone": "670556321"},
+        headers={"X-Idempotency-Key": "blood-key-123"}
+    )
+
     assert response.status_code == status.HTTP_200_OK
+    assert response.json()["status"] == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_pay_blood_request_paid_path(client, monkeypatch):
+    """
+    Test PAID flow (MTN Cameroon *126*2*).
+    """
+    from app.schemas.payment import PaymentResponseOut
+
+    mock_out = PaymentResponseOut(
+        success=True,
+        status=PaymentStatus.PENDING,
+        message="Please dial USSD.",
+        reference="PAID-TEST-REF",
+        ussd_string="*126*2*676657577*500#"
+    )
+
+    monkeypatch.setattr(
+        "app.services.payment_service.PaymentService.process_payment",
+        AsyncMock(return_value=mock_out)
+    )
+
+    response = await client.post("/v1/blood-request-payments/", json={"phone": "677000000"})
+
     data = response.json()
-    assert data["success"] is True
-    # Verify the router properly formatted the message string
-    assert "transaction:mock_tx_uuid_789" in data["message"]
     assert data["status"] == "PENDING"
+    assert data["ussd_string"].startswith("*126*2*")
+
 
 @pytest.mark.asyncio
-async def test_get_remaining_blood_requests(monkeypatch):
+async def test_get_remaining_blood_requests(client, monkeypatch):
     """
-    Test remaining free blood requests endpoint.
-    Aligned with Doctor GET pattern.
+    Test quota checking.
     """
-
-    # 1. Mock the Repository count method (Internal Repository Mock)
-    async def mock_count(*args, **kwargs):
-        # Simulate that the user has already used 2 requests
-        return 2
-
     monkeypatch.setattr(
-        "app.data.repositories.UsageRepository.count",
-        mock_count
+        "app.services.payment_service.PaymentService.get_remaining_free_uses",
+        AsyncMock(return_value=3)
     )
 
-    # 2. Execute Request
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        # Passes user_id as a query param just like Doctor GET
-        response = await ac.get(
-            "/v1/payments/blood-request/remaining?user_id=blood_test_user_123"
-        )
+    response = await client.get("/v1/blood-request-payments/remaining", params={"category": "blood-request"})
 
-    # 3. Assertions
     assert response.status_code == status.HTTP_200_OK
-    data = response.json()
-    assert "remaining" in data
-    # Router logic: max(0, free_limit(0) - used(2)) = 0
-    assert data["remaining"] == 0
+    assert response.json()["remaining"] == 3
 
-    # Clean up overrides after tests
+
+@pytest.fixture(scope="module", autouse=True)
+def cleanup_overrides():
+    yield
     app.dependency_overrides.clear()

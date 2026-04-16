@@ -1,20 +1,25 @@
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# ✅ Aligned Dependencies: Using the same pattern as Bike/Doctor
-from app.api.dependencies import get_current_user, get_db_session
+# ✅ Aligned Dependencies: Using get_db to ensure session consistency
+from app.api.dependencies import get_current_user, get_db
+
+# ✅ MODERN REPOSITORY: Standardized usage tracking
+from app.repositories.usage_repo import SQLAlchemyUsageRepository
+from app.domain.usecases import SERVICE_FREE_LIMITS_SIMPLE as SERVICE_FREE_LIMITS
+
+# ✅ FIXED IMPORTS: Standardized to PaymentResponseOut to resolve ImportError
 from app.schemas.payment import (
     PaymentRequest,
-    PaymentResponse,
+    PaymentResponseOut,  # Renamed from PaymentResponse
     FreeUsageResponse,
     PaymentStatus,
 )
-from app.services.payment_service import PaymentService
 
 # -------------------------
 # Logger Configuration
@@ -25,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Router Configuration
 # -------------------------
 router = APIRouter(
-    prefix="/payments/nurse-services",
+    prefix="/v1/payments/nurse-services",
     tags=["nurse-payments"],
     redirect_slashes=False
 )
@@ -37,25 +42,28 @@ router = APIRouter(
 @router.get("/remaining", response_model=FreeUsageResponse)
 async def remaining_nurse_uses(
         user_id: Optional[str] = None,
-        db: AsyncSession = Depends(get_db_session),
+        db: AsyncSession = Depends(get_db),
         current_user=Depends(get_current_user),
 ):
     """
-    Returns remaining free nurse services for a user following the Bike pattern.
+    Returns remaining free nurse services using the standardized counter repository.
     """
     try:
-        # Priority: Query Parameter > Authenticated User UID
-        target_uid = user_id or getattr(current_user, "uid", "")
+        target_uid = user_id or current_user.uid
 
-        remaining = await PaymentService.get_remaining_free_uses(
-            db,
-            target_uid,
-            category="nurse",
+        repo = SQLAlchemyUsageRepository(db)
+        used = await repo.count_uses(target_uid, "nurse")
+
+        free_limit = SERVICE_FREE_LIMITS.get("nurse", 0)
+        remaining_count = max(0, free_limit - used)
+
+        return FreeUsageResponse(
+            remaining=remaining_count,
+            fee=1500 if remaining_count == 0 else 0  # 2026 Nurse Service Fee in XAF
         )
-        return FreeUsageResponse(remaining=remaining)
 
-    except Exception:
-        logger.exception("Error computing remaining nurse uses")
+    except Exception as e:
+        logger.error(f"Error computing remaining nurse uses for {target_uid}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to compute remaining free nurse services",
@@ -65,45 +73,61 @@ async def remaining_nurse_uses(
 # -------------------------------------------------
 # PAY FOR NURSE SERVICE
 # -------------------------------------------------
-@router.post("", response_model=PaymentResponse)
+@router.post("", response_model=PaymentResponseOut)
 async def pay_nurse_service(
-        req: PaymentRequest,  # ✅ Standardized: No longer using NursePaymentRequest
-        db: AsyncSession = Depends(get_db_session),
+        req: PaymentRequest,
+        db: AsyncSession = Depends(get_db),
         current_user=Depends(get_current_user),
         x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
 ):
     """
-    Initiates a nurse service payment using current_user.uid.
-    Matches the standardized PaymentRequest pattern.
+    Initiates nurse service usage. Increments free counter or generates USSD for payment.
     """
     try:
-        # Step 1: Secure Identity from Token
-        user_id = current_user.uid
+        repo = SQLAlchemyUsageRepository(db)
+        used = await repo.count_uses(current_user.uid, "nurse")
+        free_limit = SERVICE_FREE_LIMITS.get("nurse", 0)
 
-        # Step 2: Process via common PaymentService
-        payment_result = await PaymentService.process_payment(
-            db=db,
-            user_id=user_id,
-            category="nurse",
-            req=req,
-            idempotency_key=x_idempotency_key,
-        )
+        # ✅ LOGIC 1: Handle Free Tier Consumption
+        if used < free_limit:
+            usage_ref = f"NURSE-FREE-{uuid.uuid4().hex[:8].upper()}"
+            await repo.record_usage(
+                user_id=current_user.uid,
+                service="nurse",
+                paid=False,
+                amount=0.0,
+                request_id=usage_ref
+            )
+            await db.commit()
 
-        # Step 3: Standardized Response Mapping (Safely handling attributes)
-        return PaymentResponse(
+            return PaymentResponseOut(
+                success=True,
+                reference=usage_ref,
+                status=PaymentStatus.SUCCESS,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+                message="Free nurse service recorded successfully.",
+                ussd_string=None,
+            )
+
+        # ✅ LOGIC 2: Handle Paid Tier (2026 Merchant USSD Rail)
+        payment_ref = f"NURSE-PAID-{uuid.uuid4().hex[:8].upper()}"
+
+        # 2026 Merchant format: *126*2*RECIPIENT*AMOUNT#
+        merchant_ussd = "*126*2*672223344*1500#"
+
+        return PaymentResponseOut(
             success=True,
-            reference=getattr(payment_result, "reference", uuid.uuid4().hex.upper()),
+            reference=payment_ref,
             status=PaymentStatus.PENDING,
-            expires_at=getattr(payment_result, "expires_at", datetime.now(timezone.utc)),
-            message=getattr(payment_result, "message", "Nurse service payment initiated"),
-            ussd_string=getattr(payment_result, "ussd_string", None),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+            message="Nurse service payment initiated. Please dial the USSD prompt.",
+            ussd_string=merchant_ussd,
         )
 
-    except Exception:
-        logger.exception("Nurse payment failed for user=%s", getattr(current_user, "uid", None))
+    except Exception as exc:
+        logger.exception("Nurse payment failed for user=%s", current_user.uid)
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Payment processing failed",
+            detail=f"Payment processing failed: {str(exc)}",
         )
-
-

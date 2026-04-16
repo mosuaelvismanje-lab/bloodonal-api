@@ -1,7 +1,5 @@
-# File: app/routers/notifications.py
-import asyncio
-import inspect
 import logging
+from datetime import datetime, timedelta
 from typing import List, Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response
@@ -15,65 +13,50 @@ from app.schemas.notification import NotificationDto, PushNotification, FcmToken
 
 logger = logging.getLogger(__name__)
 
+# ✅ FIXED: Changed prefix to "/notifications" to avoid the "/v1/v1" error in logs
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
+# --- In-Memory Rate Limiting for Global Topics ---
+# This prevents spamming the global broadcast channel.
+last_broadcasts: Dict[str, datetime] = {}
+COOLDOWN_SECONDS = 30
 
-async def _maybe_await(func: Any, *args, **kwargs):
-    """
-    If func is async, await it. If it's sync, run it in a thread to avoid blocking.
-    Returns the underlying function result.
-    """
-    if inspect.iscoroutinefunction(func):
-        return await func(*args, **kwargs)
-    return await asyncio.to_thread(func, *args, **kwargs)
-
-
+# --- Dependency Injection ---
 async def get_notification_service(
     session: AsyncSession = Depends(get_async_session),
 ) -> NotificationService:
-    """
-    Build and return a NotificationService wired with NotificationRepository.
-    """
     repo = NotificationRepository(session)
-    svc = NotificationService(repo)
-    return svc
-
+    return NotificationService(repo)
 
 async def get_token_repository(
     session: AsyncSession = Depends(get_async_session),
 ) -> TokenRepository:
-    """Dependency for TokenRepository."""
     return TokenRepository(session)
 
-
-@router.get("/", response_model=List[NotificationDto])
-async def list_notifications(
+# --------------------------------------------------------------------------
+# ✅ GET /history/{user_id} - Notification Inbox
+# --------------------------------------------------------------------------
+@router.get("/history/{user_id}", response_model=List[NotificationDto])
+async def get_notification_history(
     user_id: str,
     notifier: NotificationService = Depends(get_notification_service),
 ):
     """
-    List notifications for a user.
+    Returns the list of past notifications for a user or topic.
     """
     try:
-        list_fn = getattr(notifier.repo, "list_for_user", None)
-        if list_fn is None:
-            raise AttributeError("NotificationRepository missing list_for_user")
-        items = await _maybe_await(list_fn, user_id)
+        items = await notifier.repo.list_for_user(user_id)
         return items
-    except AttributeError:
-        logger.error("NotificationRepository missing list_for_user method")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Notification repository misconfigured",
-        )
     except Exception as exc:
         logger.exception("Failed to list notifications for user=%s", user_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not fetch notifications",
-        ) from exc
+        )
 
-
+# --------------------------------------------------------------------------
+# ✅ POST /send - The Broadcast/Push Logic (With Rate Limiting)
+# --------------------------------------------------------------------------
 @router.post("/send", response_model=Dict[str, Any])
 async def send_push(
     payload: PushNotification,
@@ -81,72 +64,76 @@ async def send_push(
     token_repo: TokenRepository = Depends(get_token_repository),
 ):
     """
-    Create a notification and optionally send push notifications to all user's tokens.
-    Treats `topic` as a single FCM token if provided, otherwise fetches tokens from the repository.
+    Sends a push notification and persists it to history.
+    - Uses Rate Limiting for topic-based broadcasts.
+    - Automatically cleans up unregistered FCM tokens.
     """
-    try:
-        fcm_tokens: List[str] = []
-        if payload.topic:
-            fcm_tokens = [payload.topic]  # Single token
-        else:
-            # fetch all tokens for the user_id if topic not provided
-            if hasattr(payload, "user_id") and payload.user_id:
-                fcm_tokens = await token_repo.get_tokens(payload.user_id)
+    # 1. Topic Cooldown Logic
+    if payload.topic:
+        last_time = last_broadcasts.get(payload.topic)
+        if last_time and (datetime.now() - last_time) < timedelta(seconds=COOLDOWN_SECONDS):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Topic '{payload.topic}' is on cooldown. Please wait {COOLDOWN_SECONDS}s."
+            )
+        last_broadcasts[payload.topic] = datetime.now()
 
+    try:
+        # 2. Execute Notification through Service
         result = await notifier.create_and_notify(
-            user_id=getattr(payload, "user_id", "unknown"),
+            user_id=payload.user_id or "unknown",
             sub_type="generic",
             location="N/A",
             phone="N/A",
             message=payload.body,
             title=payload.title,
-            token_repo=token_repo if fcm_tokens else None,
+            data=payload.data,
+            token_repo=token_repo,  # Required for automatic token cleanup
+            topic=payload.topic
         )
         return result
     except Exception as exc:
-        logger.exception(
-            "Failed to send push notification to payload=%s", payload.model_dump()
-        )
+        logger.exception("Push notification workflow failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Push notification failed",
-        ) from exc
+        )
 
-
+# --------------------------------------------------------------------------
+# ✅ POST /token - Save/Upsert Device Token
+# --------------------------------------------------------------------------
 @router.post("/token", status_code=status.HTTP_204_NO_CONTENT)
 async def update_token(
     payload: FcmTokenUpdate,
     repo: TokenRepository = Depends(get_token_repository),
 ):
     """
-    Save or update a user's FCM token.
+    Registers or updates an FCM token for a user.
     """
     try:
         await repo.upsert(payload.user_id, payload.token)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
         logger.exception("Failed to update FCM token for user=%s", payload.user_id)
+        # Detailed error for debugging the timezone/data issues
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not update FCM token",
-        ) from exc
+            status_code=500,
+            detail=f"Database error: {str(exc)}"
+        )
 
-
+# --------------------------------------------------------------------------
+# ✅ GET /token/{user_id} - Debugging
+# --------------------------------------------------------------------------
 @router.get("/token/{user_id}", response_model=List[str])
-async def get_tokens(
+async def get_registered_tokens(
     user_id: str,
     repo: TokenRepository = Depends(get_token_repository),
 ):
     """
-    Retrieve all stored FCM tokens for a given user.
-    Useful for debugging or multi-device support.
+    Utility endpoint to see which tokens are currently registered for a user.
     """
     try:
-        tokens = await repo.get_tokens(user_id)
-        return tokens
+        return await repo.get_tokens(user_id)
     except Exception as exc:
-        logger.exception("Failed to fetch FCM tokens for user=%s", user_id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not fetch FCM tokens",
-        ) from exc
+        logger.exception("Failed to fetch tokens for user=%s", user_id)
+        raise HTTPException(status_code=500, detail="Could not fetch tokens")

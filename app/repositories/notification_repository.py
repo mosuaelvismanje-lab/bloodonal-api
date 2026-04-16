@@ -1,54 +1,101 @@
-# File: app/repositories/notification_repository.py
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from sqlalchemy import select, desc
 from sqlalchemy.exc import SQLAlchemyError
 
+# ✅ Points to your unified Notification model
 from app.models.notification import Notification
 
 logger = logging.getLogger(__name__)
 
-
 class NotificationRepository:
     """
-    Repository for handling notifications.
+    Handles persistence for in-app alerts.
+    Standardized for UUID lookups and 2026 Modular Service events.
     """
 
     def __init__(self, session: AsyncSession):
-        self._session = session
+        self.session = session
 
-    async def list_for_user(self, user_id: str) -> List[Notification]:
+    # ---------------------------------------------------------
+    # ✅ Create Notification
+    # ---------------------------------------------------------
+    async def create_notification(
+            self,
+            user_id: uuid.UUID,
+            sub_type: str,
+            message: str,
+            title: Optional[str] = None,
+            location: Optional[str] = None,
+            phone: Optional[str] = None,
+    ) -> Notification:
         """
-        Return all notifications for a given user.
+        Persists a new notification.
+        Used for: 'blood-request-nearby', 'payment-success', 'donor-accepted'.
         """
         try:
-            result = await self._session.execute(
-                select(Notification).where(Notification.user_id == user_id)
+            new_notif = Notification(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                title=title,
+                sub_type=sub_type,
+                location=location,
+                phone=phone,
+                message=message,
+                # ✅ Postgres handles the timezone-aware comparison better this way
+                created_at=datetime.now(timezone.utc),
+                is_read=False
             )
-            notifications: List[Notification] = result.scalars().all()
-            logger.debug("Fetched %d notifications for user_id=%s", len(notifications), user_id)
-            return notifications
+            self.session.add(new_notif)
+            # We use flush() if this is part of a larger transaction (like activation)
+            # Or commit() if it's a standalone alert.
+            await self.session.flush()
+
+            logger.info(f"🔔 Notification created for user {user_id}: {sub_type}")
+            return new_notif
         except SQLAlchemyError as e:
-            logger.exception("Failed to fetch notifications for user_id=%s", user_id)
+            await self.session.rollback()
+            logger.error(f"Failed to persist notification for {user_id}: {e}")
             raise
 
-    async def mark_read(self, notification_id: str) -> Optional[Notification]:
+    # ---------------------------------------------------------
+    # ✅ List for User (Optimized)
+    # ---------------------------------------------------------
+    async def list_for_user(self, user_id: uuid.UUID, limit: int = 50) -> List[Notification]:
         """
-        Mark a notification as read.
-        Returns the updated Notification object or None if not found.
+        Fetch the latest in-app alerts for a user's notification bell.
         """
         try:
-            notification: Optional[Notification] = await self._session.get(Notification, notification_id)
-            if notification:
-                notification.read = True
-                await self._session.commit()
-                logger.debug("Marked notification id=%s as read", notification_id)
-            else:
-                logger.warning("Notification id=%s not found", notification_id)
-            return notification
+            stmt = (
+                select(Notification)
+                .where(Notification.user_id == user_id)
+                .order_by(desc(Notification.created_at))
+                .limit(limit)
+            )
+            result = await self.session.execute(stmt)
+            return list(result.scalars().all())
+        except SQLAlchemyError as e:
+            logger.error(f"Error fetching notifications for {user_id}: {e}")
+            return []
+
+    # ---------------------------------------------------------
+    # ✅ Mark Read
+    # ---------------------------------------------------------
+    async def mark_read(self, notification_id: uuid.UUID) -> bool:
+        """
+        Updates the read status. Returns True if successful.
+        """
+        try:
+            notif = await self.session.get(Notification, notification_id)
+            if notif:
+                notif.is_read = True
+                await self.session.flush()
+                return True
+            return False
         except SQLAlchemyError:
-            await self._session.rollback()
-            logger.exception("Failed to mark notification id=%s as read", notification_id)
-            raise
+            await self.session.rollback()
+            return False

@@ -4,6 +4,9 @@ from fastapi import status
 from main import app
 from app.api.dependencies import get_current_user, get_db_session
 
+# ✅ Updated Mock Class to match the SQLAlchemyUsageRepository logic
+from app.repositories.usage_repo import SQLAlchemyUsageRepository
+
 # -------------------------
 # 1. Setup localized mocks
 # -------------------------
@@ -29,22 +32,21 @@ async def test_pay_bike_success(monkeypatch):
     Test successful bike payment initiation.
     """
 
-    # 2. Mock UseCase __init__
-    def mock_init(self, usage_repo, payment_gateway, call_gateway, chat_gateway):
-        pass
+    # 1. Mock the new Repository methods so we don't need a real DB
+    async def mock_count_uses(*args, **kwargs):
+        return 0  # Assume 0 uses so we test the "Free" path
 
+    async def mock_record_usage(*args, **kwargs):
+        return None
+
+    # ✅ Redirecting monkeypatch to the new repository path
     monkeypatch.setattr(
-        "app.domain.usecases.ConsultationUseCase.__init__",
-        mock_init
+        "app.repositories.usage_repo.SQLAlchemyUsageRepository.count_uses",
+        mock_count_uses
     )
-
-    # 3. Mock UseCase handle method
-    async def mock_handle(*args, **kwargs):
-        return "mock-bike-tx-id"
-
     monkeypatch.setattr(
-        "app.domain.usecases.ConsultationUseCase.handle",
-        mock_handle
+        "app.repositories.usage_repo.SQLAlchemyUsageRepository.record_usage",
+        mock_record_usage
     )
 
     # 4. Valid Payload
@@ -68,40 +70,42 @@ async def test_pay_bike_success(monkeypatch):
 
     # 6. Assertions
     assert response.status_code == status.HTTP_200_OK
-    # ✅ FIX: HTTPX Response uses .json(), not .model_dump_json()
     data = response.json()
     assert data["success"] is True
-    assert "mock-bike-tx-id" in data["message"]
-    assert data["status"] == "PENDING"
+    assert data["status"] == "SUCCESS"  # Since count was 0, it hits the FREE path
 
 @pytest.mark.asyncio
 async def test_get_remaining_bike_rides(monkeypatch):
     """
     Test the GET endpoint for remaining free rides.
     """
-    # 1. Mock the Repository count method
-    async def mock_count(self, user_id: str, service: str):
+    # 1. Mock the NEW Repository count_uses method
+    # ✅ FIX: Target the new SQLAlchemyUsageRepository
+    async def mock_count_uses(self, user_id: str, service: str):
         assert service == "bike"
-        return 2  # Simulate 2 rides already used
+        return 1  # Simulate 1 ride already used
 
     monkeypatch.setattr(
-        "app.data.repositories.UsageRepository.count",
-        mock_count
+        "app.repositories.usage_repo.SQLAlchemyUsageRepository.count_uses",
+        mock_count_uses
     )
 
     # 2. Execute Request
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.get("/v1/payments/bike/remaining?user_id=test_123")
+        # ✅ FIX: Ensure the URL includes /v1 to match the updated router
+        response = await ac.get(
+            "/v1/payments/bike/remaining",
+            headers={"Authorization": "Bearer fake-token"}
+        )
 
     # 3. Debugging (only shows if assertion fails)
     if response.status_code != 200:
-        # ✅ FIX: Use .json() here as well
         print(f"Error Body: {response.json()}")
 
     # 4. Assertions
     assert response.status_code == status.HTTP_200_OK
-    # ✅ FIX: Use .json() to get the dictionary
     data = response.json()
     assert "remaining" in data
-    assert data["remaining"] >= 0
+    # If limit is 2 and we mocked used as 1, remaining should be 1
+    assert data["remaining"] == 1

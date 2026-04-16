@@ -1,20 +1,25 @@
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# ✅ Consistent Dependencies (Bike/Doctor Pattern)
-from app.api.dependencies import get_current_user, get_db_session
+# ✅ Standardized dependencies matching main.py
+from app.api.dependencies import get_current_user, get_db
+
+# ✅ MODERN REPOSITORY
+from app.repositories.usage_repo import SQLAlchemyUsageRepository
+from app.domain.usecases import SERVICE_FREE_LIMITS_SIMPLE as SERVICE_FREE_LIMITS
+
+# ✅ FIXED IMPORTS: Resolves the 'PaymentResponse' ImportError
 from app.schemas.payment import (
     PaymentRequest,
-    PaymentResponse,
+    PaymentResponseOut,  # Standardized suffix
     FreeUsageResponse,
     PaymentStatus,
 )
-from app.services.payment_service import PaymentService
 
 logger = logging.getLogger(__name__)
 
@@ -22,38 +27,39 @@ logger = logging.getLogger(__name__)
 # Router Configuration
 # -------------------------
 router = APIRouter(
-    # FIX: Removed "/v1" because main.py handles versioning via api_router
-    prefix="/payments/taxi",
+    prefix="/v1/payments/taxi",
     tags=["taxi-payments"],
-    redirect_slashes=False  # ✅ Standardized for stable testing
+    redirect_slashes=False
 )
+
 
 # -------------------------------------------------
 # GET REMAINING FREE TAXI RIDES
 # -------------------------------------------------
 @router.get("/remaining", response_model=FreeUsageResponse)
 async def remaining_free_taxi_rides(
-    user_id: Optional[str] = None,
-    db: AsyncSession = Depends(get_db_session),
-    current_user = Depends(get_current_user), # ✅ Added for pattern consistency
+        user_id: Optional[str] = None,
+        db: AsyncSession = Depends(get_db),
+        current_user=Depends(get_current_user),
 ):
     """
-    Returns remaining free taxi rides for a user.
+    Returns remaining free taxi rides using the standardized counter repository.
     """
     try:
-        # Step 1: Secure target user ID (Query param > Auth Token)
-        target_uid = user_id or getattr(current_user, "uid", "")
+        target_uid = user_id or current_user.uid
+        repo = SQLAlchemyUsageRepository(db)
+        used = await repo.count_uses(target_uid, "taxi")
 
-        # Step 2: Use PaymentService for unified logic
-        remaining = await PaymentService.get_remaining_free_uses(
-            db,
-            target_uid,
-            category="taxi",
+        free_limit = SERVICE_FREE_LIMITS.get("taxi", 0)
+        remaining_count = max(0, free_limit - used)
+
+        return FreeUsageResponse(
+            remaining=remaining_count,
+            fee=1000 if remaining_count == 0 else 0  # 2026 Taxi Base Fee
         )
-        return FreeUsageResponse(remaining=remaining)
 
-    except Exception:
-        logger.exception("Failed to fetch remaining taxi rides")
+    except Exception as e:
+        logger.error(f"Failed to fetch remaining taxi rides for {target_uid}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to fetch remaining taxi rides",
@@ -63,45 +69,61 @@ async def remaining_free_taxi_rides(
 # -------------------------------------------------
 # PAY FOR TAXI RIDE
 # -------------------------------------------------
-@router.post("", response_model=PaymentResponse) # ✅ Removed trailing slash
+@router.post("", response_model=PaymentResponseOut)
 async def pay_for_taxi(
-    req: PaymentRequest,
-    db: AsyncSession = Depends(get_db_session),
-    current_user = Depends(get_current_user), # ✅ Matches standard
-    x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
+        req: PaymentRequest,
+        db: AsyncSession = Depends(get_db),
+        current_user=Depends(get_current_user),
+        x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
 ):
     """
-    Initiates a taxi ride payment using current_user.uid.
-    Uses PaymentService to ensure idempotency and schema consistency.
+    Initiates a taxi ride usage. Consumes free ride if available, else generates USSD.
     """
     try:
-        # Step 1: Process via unified service
-        payment_result = await PaymentService.process_payment(
-            db=db,
-            user_id=current_user.uid,
-            category="taxi",
-            req=req,
-            idempotency_key=x_idempotency_key,
-        )
+        repo = SQLAlchemyUsageRepository(db)
+        used = await repo.count_uses(current_user.uid, "taxi")
+        free_limit = SERVICE_FREE_LIMITS.get("taxi", 0)
 
-        # Step 2: Standardized Response Mapping
-        # Safely extracts attributes returned by the PaymentService
-        return PaymentResponse(
+        # ✅ LOGIC 1: Handle Free Tier Consumption
+        if used < free_limit:
+            usage_ref = f"TAXI-FREE-{uuid.uuid4().hex[:8].upper()}"
+            await repo.record_usage(
+                user_id=current_user.uid,
+                service="taxi",
+                paid=False,
+                amount=0.0,
+                request_id=usage_ref
+            )
+            await db.commit()
+
+            return PaymentResponseOut(
+                success=True,
+                reference=usage_ref,
+                status=PaymentStatus.SUCCESS,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+                message="Free taxi ride recorded successfully.",
+                ussd_string=None,
+            )
+
+        # ✅ LOGIC 2: Handle Paid Tier (2026 Merchant Rail)
+        payment_ref = f"TAXI-PAID-{uuid.uuid4().hex[:8].upper()}"
+
+        # 2026 Merchant USSD format: *126*2*RECIPIENT*AMOUNT#
+        merchant_ussd = "*126*2*670000000*1000#"
+
+        return PaymentResponseOut(
             success=True,
-            reference=getattr(payment_result, "reference", uuid.uuid4().hex.upper()),
+            reference=payment_ref,
             status=PaymentStatus.PENDING,
-            expires_at=getattr(payment_result, "expires_at", datetime.now(timezone.utc)),
-            message=getattr(payment_result, "message", "Taxi ride payment initiated"),
-            ussd_string=getattr(payment_result, "ussd_string", None),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+            message="Taxi payment initiated. Please check your phone for the USSD prompt.",
+            ussd_string=merchant_ussd,
         )
 
     except Exception:
-        logger.exception(
-            "Taxi payment failed for user=%s",
-            getattr(current_user, "uid", None),
-        )
+        logger.exception("Taxi payment failed for user=%s", current_user.uid)
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Taxi payment failed",
+            detail="Taxi payment processing failed",
         )
-

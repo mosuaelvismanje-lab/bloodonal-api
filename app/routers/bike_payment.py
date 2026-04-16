@@ -1,30 +1,25 @@
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_current_user, get_db_session
+# ✅ Project Dependencies - Updated to match main.py naming
+from app.api.dependencies import get_current_user, get_db
 from app.schemas.bike_payment import BikePaymentRequest, BikePaymentResponse, BikeFreeUsageResponse
 from app.schemas.payment import PaymentStatus
-from app.domain.usecases import ConsultationUseCase
-from app.data.repositories import UsageRepository
-from app.services.payment_service import PaymentService
-from app.domain.consultation_models import ChannelType, UserRoles
 
-# -------------------------
-# Logger Configuration
-# -------------------------
+# ✅ MODERN REPOSITORY
+from app.repositories.usage_repo import SQLAlchemyUsageRepository
+from app.domain.usecases import SERVICE_FREE_LIMITS_SIMPLE as SERVICE_FREE_LIMITS
+
 logger = logging.getLogger(__name__)
 
-# -------------------------
-# Router Configuration
-# -------------------------
 router = APIRouter(
-    prefix="/payments/bike",
-    tags=["payments"],
+    prefix="/v1/payments/bike",
+    tags=["BikePayments"],
     redirect_slashes=False
 )
 
@@ -34,24 +29,27 @@ router = APIRouter(
 # -------------------------
 @router.get("/remaining", response_model=BikeFreeUsageResponse)
 async def remaining_free_bike_rides(
-        user_id: Optional[str] = None,
-        db: AsyncSession = Depends(get_db_session),
+        db: AsyncSession = Depends(get_db),
+        current_user=Depends(get_current_user),
 ):
     """
-    Check remaining free bike rides for a user.
+    Check remaining free bike rides for the authenticated user.
+    Uses the 2026 UsageCounter logic.
     """
     try:
-        # ✅ FIX: Added "bike" as the second positional argument (service)
-        # to match the UsageRepository.count() signature
-        repo = UsageRepository(db)
-        used = await repo.count(user_id or "", "bike")
+        usage_repo = SQLAlchemyUsageRepository(db)
+        used = await usage_repo.count_uses(current_user.uid, "bike")
 
-        # Define your business logic for free limits here
-        free_limit = 0
+        # Pulling limits from central domain logic (Default 2 for bikes)
+        free_limit = SERVICE_FREE_LIMITS.get("bike", 2)
+        remaining_count = max(0, free_limit - used)
 
-        return BikeFreeUsageResponse(remaining=max(0, free_limit - used))
-    except Exception:
-        logger.exception("Error fetching remaining bike rides")
+        return BikeFreeUsageResponse(
+            remaining=remaining_count,
+            fee=500 if remaining_count == 0 else 0  # Standard 2026 bike fee
+        )
+    except Exception as e:
+        logger.error(f"Error fetching bike rides for {current_user.uid}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to fetch remaining bike rides",
@@ -64,51 +62,63 @@ async def remaining_free_bike_rides(
 @router.post("", response_model=BikePaymentResponse)
 async def pay_for_bike(
         req: BikePaymentRequest,
-        db: AsyncSession = Depends(get_db_session),
+        db: AsyncSession = Depends(get_db),
         current_user=Depends(get_current_user),
         x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
 ):
     """
-    Initiate bike payment via ConsultationUseCase.
+    Initiate bike payment or consume free ride.
+    Integrated with 2026 SMS-Bypass USSD generation.
     """
     try:
-        uc = ConsultationUseCase(
-            UsageRepository(db),
-            None,  # payment_gateway
-            None,  # call_gateway
-            None  # chat_gateway
-        )
+        usage_repo = SQLAlchemyUsageRepository(db)
+        used = await usage_repo.count_uses(current_user.uid, "bike")
+        free_limit = SERVICE_FREE_LIMITS.get("bike", 2)
 
-        result = await uc.handle(
-            caller_id=current_user.uid,
-            recipient_id="BIKE_SERVICE_PROVIDER",
-            caller_phone=req.phone,
-            channel=ChannelType.VOICE,
-            recipient_role=UserRoles.DOCTOR,
-            idempotency_key=x_idempotency_key,
-        )
+        # 1. Handle Free Ride logic
+        if used < free_limit:
+            # Generate a unique tracking ID for this specific usage
+            internal_ref = f"BIKE-FREE-{uuid.uuid4().hex[:8].upper()}"
 
-        tx_id = getattr(result, 'transaction_id', result)
+            await usage_repo.record_usage(
+                user_id=current_user.uid,
+                service="bike",
+                paid=False,
+                amount=0.0,
+                request_id=internal_ref
+            )
+            await db.commit()
+
+            return BikePaymentResponse(
+                success=True,
+                reference=internal_ref,
+                status=PaymentStatus.SUCCESS,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+                message="Free bike ride recorded successfully.",
+                ussd_string=None
+            )
+
+        # 2. Handle Paid Ride logic (2026 Merchant USSD Rail)
+        # In a full implementation, this would call your PaymentService
+        transaction_id = f"BIKE-PAID-{uuid.uuid4().hex[:8].upper()}"
+
+        # ✅ 2026 Merchant USSD Format: *126*2*RECIPIENT*AMOUNT#
+        # Using a simulated merchant number for the bike service
+        merchant_ussd = f"*126*2*676657577*500#"
 
         return BikePaymentResponse(
             success=True,
-            reference=uuid.uuid4().hex.upper(),
+            reference=transaction_id,
             status=PaymentStatus.PENDING,
-            expires_at=datetime.now(timezone.utc),
-            message=f"transaction:{tx_id}",
-            ussd_string=None,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+            message=f"Quota exceeded. Please dial the USSD prompt on {req.phone}.",
+            ussd_string=merchant_ussd
         )
 
     except Exception:
-        logger.exception("Bike payment failed for user=%s", getattr(current_user, "uid", None))
+        logger.exception("Bike payment failed for user=%s", current_user.uid)
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Bike payment failed",
         )
-
-
-# -------------------------
-# Service Aliases
-# -------------------------
-get_remaining_free_uses = PaymentService.get_remaining_free_uses
-process_payment = PaymentService.process_payment

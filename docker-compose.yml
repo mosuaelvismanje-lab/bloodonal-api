@@ -1,0 +1,118 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: deployment/docker/Dockerfile
+    container_name: bloodonal_api
+    restart: always
+    environment:
+      - PORT=8000
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://user:pass@db:5432/bloodonal
+      - FIREBASE_SERVICE_ACCOUNT_JSON=/app/config/firebase_key.json
+      - JITSI_DOMAIN=meet.bloodonal.org
+      # ✅ Added: Ensure app knows it's in a Docker environment
+      - ENVIRONMENT=production
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs # ✅ Mount logs for persistence
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - bloodonal_net
+
+  db:
+    image: postgres:15-alpine
+    container_name: bloodonal_db
+    # ✅ Added: Tuning for 2026 high-concurrency loads
+    command: >
+      postgres 
+      -c max_connections=300 
+      -c shared_buffers=256MB 
+      -c effective_cache_size=768MB
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: bloodonal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d bloodonal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - bloodonal_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: bloodonal_redis
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - bloodonal_net
+
+  # ✅ NEW: Redis Exporter (Crucial for Prometheus Monitoring)
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: bloodonal_redis_exporter
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    networks:
+      - bloodonal_net
+    depends_on:
+      - redis
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: bloodonal_prometheus
+    user: root # Avoid permission issues on some Linux distros
+    volumes:
+      - ./deployment/docker/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d' # ✅ Keep 15 days of metrics
+    networks:
+      - bloodonal_net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: bloodonal_grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin_pass_2026
+      - GF_USERS_ALLOW_SIGN_UP=false # ✅ Security hardening
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - bloodonal_net
+
+networks:
+  bloodonal_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:

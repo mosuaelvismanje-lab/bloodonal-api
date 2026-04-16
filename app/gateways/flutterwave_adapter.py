@@ -1,12 +1,17 @@
+import uuid
 import httpx
 import logging
-from typing import Optional
-from app.domain.interfaces import IPaymentGateway
+from typing import Optional, Dict, Any
+from app.domain.gateways import IPaymentGateway, GatewayPaymentResponse
 
 logger = logging.getLogger(__name__)
 
 
 class FlutterwavePaymentGateway(IPaymentGateway):
+    """
+    Flutterwave adapter for Cameroon Mobile Money (XAF).
+    Aligned with GatewayPaymentResponse and IPaymentGateway interface.
+    """
     BASE_URL = "https://api.flutterwave.com/v3"
 
     def __init__(self, secret_key: str):
@@ -16,20 +21,23 @@ class FlutterwavePaymentGateway(IPaymentGateway):
             self,
             phone: str,
             amount: int,
-            description: str
-    ) -> str:
+            description: Optional[str] = None
+    ) -> GatewayPaymentResponse:
         """
         Initiates a Mobile Money collection (pull) via Flutterwave.
         """
-        # Flutterwave mobile money payload for Cameroon/Africa regions
+        internal_ref = f"flw-{uuid.uuid4().hex[:8]}"
+
+        # Francophone Mobile Money requires specific payload fields
         payload = {
             "amount": amount,
             "currency": "XAF",
             "phone_number": phone,
-            "network": self._detect_network(phone),  # Helper to pick MTN/ORANGE
-            "email": "payments@yourapp.com",  # Required by FLW
-            "tx_ref": f"ref-{phone}-{description[:10]}",
+            "network": self._detect_network(phone),
+            "email": "payments@yourapp.com",
+            "tx_ref": internal_ref,
             "fullname": "App User",
+            "country": "CM",  # Mandatory for Cameroon
         }
 
         async with httpx.AsyncClient() as client:
@@ -42,48 +50,59 @@ class FlutterwavePaymentGateway(IPaymentGateway):
                 )
             except httpx.RequestError as exc:
                 logger.error(f"Network error calling Flutterwave: {exc}")
-                raise RuntimeError("Payment provider is currently unreachable.")
+                return GatewayPaymentResponse(reference=internal_ref, status="FAILED")
 
         if resp.status_code not in (200, 201):
             logger.error(f"Flutterwave error: {resp.text}")
-            # Raise ValueError so the UseCase returns HTTP 402
-            raise ValueError(f"Payment failed: {resp.model_dump_json().get('message', 'Unknown error')}")
+            return GatewayPaymentResponse(reference=internal_ref, status="FAILED")
 
-        data = resp.model_dump_json()
+        # Parse JSON correctly from httpx response
+        data = resp.json()
 
-        # Check if the transaction was successfully initiated
         if data.get("status") == "error":
-            raise ValueError(data.get("message", "Transaction rejected"))
+            logger.warning(f"Flutterwave rejected charge: {data.get('message')}")
+            return GatewayPaymentResponse(reference=internal_ref, status="FAILED")
 
-        # Return the provider's transaction ID (used for future verification)
-        return str(data["data"].get("id") or data["data"].get("flw_ref"))
+        # FLW returns the transaction ID in data['data']['id']
+        flw_id = str(data.get("data", {}).get("id") or internal_ref)
 
-    async def verify(self, provider_tx_id: str) -> str:
+        return GatewayPaymentResponse(
+            reference=flw_id,
+            status="PENDING",
+            ussd_string=None,  # Flutterwave typically uses Push/STK prompts
+            provider_raw_response=data
+        )
+
+    async def verify_transaction(self, reference: str) -> str:
         """
-        Verifies the status of a specific transaction.
+        Checks the final status of a transaction using the FLW ID.
         """
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{self.BASE_URL}/transactions/{provider_tx_id}/verify",
-                headers={"Authorization": f"Bearer {self.secret_key}"}
-            )
+            try:
+                resp = await client.get(
+                    f"{self.BASE_URL}/transactions/{reference}/verify",
+                    headers={"Authorization": f"Bearer {self.secret_key}"},
+                    timeout=10.0
+                )
+            except Exception as e:
+                logger.error(f"Verification fetch failed: {e}")
+                return "PENDING"
 
         if resp.status_code != 200:
-            return "pending"
+            return "PENDING"
 
-        data = resp.model_dump_json()
-        status = data.get("data", {}).get("status", "pending")
+        data = resp.json()
+        status = data.get("data", {}).get("status", "").lower()
 
-        # Normalize status for the domain layer
+        # Map Flutterwave status to domain status
         if status == "successful":
-            return "success"
+            return "SUCCESS"
         elif status == "failed":
-            return "failed"
-        return "pending"
+            return "FAILED"
+        return "PENDING"
 
     def _detect_network(self, phone: str) -> str:
-        """Simple helper to detect MTN vs Orange based on prefix."""
-        # Standard Cameroon prefixes
-        if phone.startswith(("67", "68", "650", "651", "652", "653", "654")):
+        """Standard Cameroon prefixes for network detection."""
+        if phone.startswith(("23767", "23768", "237650", "237651", "237652", "237653", "237654", "67", "68")):
             return "MTN"
         return "ORANGE"

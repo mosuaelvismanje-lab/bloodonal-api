@@ -1,31 +1,54 @@
-# app/models/healthcare_request.py
-from sqlalchemy import Column, Integer, String, Text, Float, DateTime, ForeignKey, func
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, func
 from sqlalchemy.orm import relationship
 from app.database import Base
-from app.models.healthcare_provider import ProviderType  # import enum
+from typing import Optional
+
+# Importing the enum from the other model
+from app.models.healthcare_provider import ProviderType
+
 
 class HealthcareRequest(Base):
     __tablename__ = "healthcare_requests"
 
     id = Column(Integer, primary_key=True, index=True)
-    requester_name = Column(String, nullable=False)
-    phone = Column(String, nullable=False)
-    city = Column(String, nullable=False)
-    description = Column(Text, nullable=True)
-    latitude = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
 
-    # Link to a healthcare provider (doctor, nurse, or lab)
+    # Added index=True for faster lookups in admin dashboards
+    requester_name = Column(String, nullable=False, index=True)
+    phone = Column(String, nullable=False)
+
+    # city is now the primary search filter for geo-matching
+    city = Column(String, nullable=False, index=True)
+
+    description = Column(Text, nullable=True)
+
+    # Foreign Key remains nullable=True.
+    # This allows a request to exist as "Pending" before a provider is assigned.
     assigned_provider_id = Column(Integer, ForeignKey("healthcare_providers.id"), nullable=True)
-    status = Column(String, default="pending")
+
+    # Indexing status helps when filtering for "active" vs "completed" requests
+    status = Column(String, default="pending", index=True)
+
+    # --- Timestamps ---
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Relationship to access the provider directly
-    provider = relationship("HealthcareProvider", backref="assigned_requests")
+    # ✅ NEW: Tracks exactly when the status changed to 'assigned'
+    assigned_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Optional helper property to check provider type easily
+    # ✅ NEW: Automatically updates every time the row is modified
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationship Update: Using 'lazy="selectin"' for Async compatibility.
+    # This ensures that 'request.provider' is available without needing a
+    # separate manual 'await' call in your routers.
+    provider = relationship(
+        "HealthcareProvider",
+        backref="assigned_requests",
+        lazy="selectin"
+    )
+
+    # Helper property to check provider type easily
     @property
-    def provider_type(self) -> ProviderType | None:
+    def provider_type(self) -> Optional[ProviderType]:
         if self.provider:
-            return self.provider.service_type  # now uses enum
+            return self.provider.service_type
         return None
