@@ -7,3 +7,5 @@ venv/
 .vscode/
 .DS_Store
 serviceAccountKey.json
+
+app/api/routers/get_token.py
