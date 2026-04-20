@@ -1,4 +1,6 @@
 import logging
+from typing import Optional  # <--- THIS IS THE MISSING IMPORT
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
