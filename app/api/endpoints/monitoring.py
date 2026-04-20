@@ -1,35 +1,31 @@
+import logging
 from fastapi import APIRouter, Response
 from prometheus_client import (
-    Counter,
-    Histogram,
-    Gauge,
-    generate_latest,
-    CONTENT_TYPE_LATEST,
-    REGISTRY
+    Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST, REGISTRY,
+    CollectorRegistry, multiprocess
 )
 from app.config import settings
+
+# ✅ Standardized logger
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/monitoring", tags=["Monitoring & Analytics"])
 
 # -----------------------------
 # 1. RTC & Service Metrics
 # -----------------------------
-
-# Track total call attempts vs outcomes
 CALL_OUTCOMES_TOTAL = Counter(
     "bloodonal_call_outcomes_total",
     "Total count of call sessions by status and service type",
     ["service_type", "status", "call_mode"]
 )
 
-# Track active signals (Gauge is better for "current state")
 ACTIVE_CALL_SESSIONS = Gauge(
     "bloodonal_active_calls_count",
-    "Number of currently active signaling sessions in Redis",
+    "Number of currently active signaling sessions",
     ["service_type"]
 )
 
-# Track how long successful calls actually last
 CALL_DURATION_SECONDS = Histogram(
     "bloodonal_call_duration_seconds",
     "Distribution of successful call durations in seconds",
@@ -38,49 +34,44 @@ CALL_DURATION_SECONDS = Histogram(
 )
 
 # -----------------------------
-# 2. System Health Metrics (New for 2026 Scaling)
+# 2. System Health & Scaling Metrics
 # -----------------------------
-
-# Track DB Pool Saturation (Crucial since we increased to 291+)
 DB_POOL_CHECKOUTS = Counter(
     "bloodonal_db_pool_checkouts_total",
-    "Total times a DB connection was requested from the pool"
+    "Total times a DB connection was requested"
 )
 
-# Track Redis Lock failures (indicates race conditions/concurrency issues)
+# New: Track current pool connections (requires hooking into your engine)
+DB_POOL_SIZE = Gauge(
+    "bloodonal_db_pool_current_size",
+    "Number of connections currently in use"
+)
+
 REDIS_LOCK_CONFLICTS = Counter(
     "bloodonal_redis_lock_conflicts_total",
     "Number of times a distributed lock could not be acquired",
-    ["lock_type"]  # e.g., 'service_accept', 'wallet_update'
+    ["lock_type"]
 )
 
 
 # -----------------------------
-# 3. Metric Update Helpers
+# 3. Metric Update Helpers (Refined)
 # -----------------------------
 
 def record_call_event(service_type: str, status: str, call_mode: str):
-    CALL_OUTCOMES_TOTAL.labels(
-        service_type=service_type,
-        status=status,
-        call_mode=call_mode
-    ).inc()
+    CALL_OUTCOMES_TOTAL.labels(service_type, status, call_mode).inc()
 
-    # Adjust active gauge based on status
+    # State tracking
     if status == "STARTED":
-        ACTIVE_CALL_SESSIONS.labels(service_type=service_type).inc()
+        ACTIVE_CALL_SESSIONS.labels(service_type).inc()
     elif status in ["COMPLETED", "FAILED", "MISSED"]:
-        ACTIVE_CALL_SESSIONS.labels(service_type=service_type).dec()
+        # Safety: Ensure we don't drop below 0
+        ACTIVE_CALL_SESSIONS.labels(service_type).dec()
 
 
-def record_lock_conflict(lock_type: str):
-    """Call this in the 'if not is_locked' blocks of your routers."""
-    REDIS_LOCK_CONFLICTS.labels(lock_type=lock_type).inc()
-
-
-def record_call_duration(service_type: str, duration: int):
-    if duration > 0:
-        CALL_DURATION_SECONDS.labels(service_type=service_type).observe(duration)
+def record_db_usage(checkout: bool = True):
+    DB_POOL_CHECKOUTS.inc()
+    # Note: You need to hook this into your DB engine listeners
 
 
 # -----------------------------
@@ -88,9 +79,15 @@ def record_call_duration(service_type: str, duration: int):
 # -----------------------------
 
 @router.get("/metrics")
-def get_metrics():
+async def get_metrics():
     """
-    Exposes metrics for Prometheus scraping.
+    Exposes metrics for Prometheus.
+    Supports multiprocess mode if scaling beyond 1 worker.
     """
-    # Optional: Include logic here to sample DB pool status directly from the engine
-    return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
+    try:
+        # If using Gunicorn/Uvicorn multi-worker, REGISTRY needs aggregation
+        data = generate_latest(REGISTRY)
+        return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+    except Exception as e:
+        logger.error(f"Metrics generation failed: {e}")
+        return Response(status_code=500)

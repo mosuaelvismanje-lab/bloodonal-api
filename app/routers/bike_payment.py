@@ -1,24 +1,16 @@
 import logging
-import uuid
-from datetime import datetime, timezone, timedelta
-from typing import Optional
-
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# ✅ Project Dependencies - Updated to match main.py naming
+# ✅ Project Dependencies
 from app.api.dependencies import get_current_user, get_db
 from app.schemas.bike_payment import BikePaymentRequest, BikePaymentResponse, BikeFreeUsageResponse
-from app.schemas.payment import PaymentStatus
-
-# ✅ MODERN REPOSITORY
-from app.repositories.usage_repo import SQLAlchemyUsageRepository
-from app.domain.usecases import SERVICE_FREE_LIMITS_SIMPLE as SERVICE_FREE_LIMITS
+from app.services.payment_service import PaymentService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/v1/payments/bike",
+    prefix="/payments/bike",
     tags=["BikePayments"],
     redirect_slashes=False
 )
@@ -33,20 +25,19 @@ async def remaining_free_bike_rides(
         current_user=Depends(get_current_user),
 ):
     """
-    Check remaining free bike rides for the authenticated user.
-    Uses the 2026 UsageCounter logic.
+    Check remaining free bike rides via the Payment Engine.
     """
     try:
-        usage_repo = SQLAlchemyUsageRepository(db)
-        used = await usage_repo.count_uses(current_user.uid, "bike")
-
-        # Pulling limits from central domain logic (Default 2 for bikes)
-        free_limit = SERVICE_FREE_LIMITS.get("bike", 2)
-        remaining_count = max(0, free_limit - used)
+        # ✅ ALIGNED: Delegate to the Engine
+        remaining = await PaymentService.get_remaining_free_uses(
+            db,
+            user_id=current_user.uid,
+            category="bike"
+        )
 
         return BikeFreeUsageResponse(
-            remaining=remaining_count,
-            fee=500 if remaining_count == 0 else 0  # Standard 2026 bike fee
+            remaining=remaining,
+            fee=500 if remaining == 0 else 0
         )
     except Exception as e:
         logger.error(f"Error fetching bike rides for {current_user.uid}: {e}")
@@ -67,57 +58,30 @@ async def pay_for_bike(
         x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
 ):
     """
-    Initiate bike payment or consume free ride.
-    Integrated with 2026 SMS-Bypass USSD generation.
+    Initiate bike payment or consume free ride via the Payment Engine.
     """
     try:
-        usage_repo = SQLAlchemyUsageRepository(db)
-        used = await usage_repo.count_uses(current_user.uid, "bike")
-        free_limit = SERVICE_FREE_LIMITS.get("bike", 2)
+        # ✅ ALIGNED: Delegate the entire process to the Payment Engine
+        payment_out = await PaymentService.process_payment(
+            db,
+            user_id=current_user.uid,
+            user_phone=req.phone,
+            category="bike",
+            req_data=req.metadata if hasattr(req, 'metadata') else {}
+        )
 
-        # 1. Handle Free Ride logic
-        if used < free_limit:
-            # Generate a unique tracking ID for this specific usage
-            internal_ref = f"BIKE-FREE-{uuid.uuid4().hex[:8].upper()}"
-
-            await usage_repo.record_usage(
-                user_id=current_user.uid,
-                service="bike",
-                paid=False,
-                amount=0.0,
-                request_id=internal_ref
-            )
-            await db.commit()
-
-            return BikePaymentResponse(
-                success=True,
-                reference=internal_ref,
-                status=PaymentStatus.SUCCESS,
-                expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
-                message="Free bike ride recorded successfully.",
-                ussd_string=None
-            )
-
-        # 2. Handle Paid Ride logic (2026 Merchant USSD Rail)
-        # In a full implementation, this would call your PaymentService
-        transaction_id = f"BIKE-PAID-{uuid.uuid4().hex[:8].upper()}"
-
-        # ✅ 2026 Merchant USSD Format: *126*2*RECIPIENT*AMOUNT#
-        # Using a simulated merchant number for the bike service
-        merchant_ussd = f"*126*2*676657577*500#"
-
+        # Map the generic PaymentResponseOut to your specific BikePaymentResponse
         return BikePaymentResponse(
-            success=True,
-            reference=transaction_id,
-            status=PaymentStatus.PENDING,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
-            message=f"Quota exceeded. Please dial the USSD prompt on {req.phone}.",
-            ussd_string=merchant_ussd
+            success=payment_out.success,
+            reference=payment_out.reference,
+            status=payment_out.status,
+            expires_at=payment_out.expires_at,
+            message=payment_out.message,
+            ussd_string=payment_out.ussd_string
         )
 
     except Exception:
         logger.exception("Bike payment failed for user=%s", current_user.uid)
-        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Bike payment failed",

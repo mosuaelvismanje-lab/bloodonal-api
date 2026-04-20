@@ -1,14 +1,12 @@
 import pytest
+from unittest.mock import MagicMock, AsyncMock
 from httpx import AsyncClient, ASGITransport
 from fastapi import status
 from main import app
-from app.api.dependencies import get_current_user, get_db_session
-
-# ✅ Updated Mock Class to match the SQLAlchemyUsageRepository logic
-from app.repositories.usage_repo import SQLAlchemyUsageRepository
+from app.api.dependencies import get_current_user, get_db
 
 # -------------------------
-# 1. Setup localized mocks
+# 1. Standardized Mocks
 # -------------------------
 class MockUser:
     def __init__(self):
@@ -18,94 +16,80 @@ async def override_get_current_user():
     return MockUser()
 
 async def override_get_db():
-    # We yield a string because we are monkeypatching the Repositories
-    # that would normally use this session.
-    yield "mock_session"
+    mock_session = AsyncMock()
+    # Ensure commit and rollback are awaitable
+    mock_session.commit = AsyncMock()
+    mock_session.rollback = AsyncMock()
+    yield mock_session
 
-# Apply the overrides to the app instance globally for this test session
-app.dependency_overrides[get_current_user] = override_get_current_user
-app.dependency_overrides[get_db_session] = override_get_db
+@pytest.fixture(autouse=True)
+def setup_overrides():
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[get_db] = override_get_db
+    yield
+    app.dependency_overrides.clear()
+
+# -------------------------
+# 2. Test Cases
+# -------------------------
 
 @pytest.mark.asyncio
 async def test_pay_bike_success(monkeypatch):
     """
-    Test successful bike payment initiation.
+    Test successful bike payment initiation via the Service Layer.
     """
+    from app.schemas.payment import PaymentResponseOut, PaymentStatus
+    from datetime import datetime, timezone, timedelta
 
-    # 1. Mock the new Repository methods so we don't need a real DB
-    async def mock_count_uses(*args, **kwargs):
-        return 0  # Assume 0 uses so we test the "Free" path
-
-    async def mock_record_usage(*args, **kwargs):
-        return None
-
-    # ✅ Redirecting monkeypatch to the new repository path
-    monkeypatch.setattr(
-        "app.repositories.usage_repo.SQLAlchemyUsageRepository.count_uses",
-        mock_count_uses
-    )
-    monkeypatch.setattr(
-        "app.repositories.usage_repo.SQLAlchemyUsageRepository.record_usage",
-        mock_record_usage
+    # Create a mock response matching the PaymentService return type
+    mock_out = PaymentResponseOut(
+        success=True,
+        reference="BIKE-REF-123",
+        status=PaymentStatus.PENDING,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        message="Bike payment initiated",
+        ussd_string="*126*9*677123456*500#"
     )
 
-    # 4. Valid Payload
-    payload = {
-        "phone": "677123456",
-        "metadata": {"source": "mobile_app"}
-    }
+    # Patch the Service layer
+    monkeypatch.setattr(
+        "app.services.payment_service.PaymentService.process_payment",
+        AsyncMock(return_value=mock_out)
+    )
 
-    # 5. Execute Request
+    payload = {"phone": "677123456"}
+
     transport = ASGITransport(app=app)
-
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         response = await ac.post(
             "/v1/payments/bike",
             json=payload,
-            headers={
-                "Authorization": "Bearer fake-token",
-                "X-Idempotency-Key": "test-idempotency-key-123"
-            }
+            headers={"Authorization": "Bearer fake-token"}
         )
 
-    # 6. Assertions
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
     assert data["success"] is True
-    assert data["status"] == "SUCCESS"  # Since count was 0, it hits the FREE path
+    assert data["reference"] == "BIKE-REF-123"
+    assert "ussd_string" in data
 
 @pytest.mark.asyncio
 async def test_get_remaining_bike_rides(monkeypatch):
     """
-    Test the GET endpoint for remaining free rides.
+    Test the GET endpoint using the Service layer.
     """
-    # 1. Mock the NEW Repository count_uses method
-    # ✅ FIX: Target the new SQLAlchemyUsageRepository
-    async def mock_count_uses(self, user_id: str, service: str):
-        assert service == "bike"
-        return 1  # Simulate 1 ride already used
-
+    # Patch the Service layer method
     monkeypatch.setattr(
-        "app.repositories.usage_repo.SQLAlchemyUsageRepository.count_uses",
-        mock_count_uses
+        "app.services.payment_service.PaymentService.get_remaining_free_uses",
+        AsyncMock(return_value=1)
     )
 
-    # 2. Execute Request
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        # ✅ FIX: Ensure the URL includes /v1 to match the updated router
         response = await ac.get(
             "/v1/payments/bike/remaining",
             headers={"Authorization": "Bearer fake-token"}
         )
 
-    # 3. Debugging (only shows if assertion fails)
-    if response.status_code != 200:
-        print(f"Error Body: {response.json()}")
-
-    # 4. Assertions
     assert response.status_code == status.HTTP_200_OK
-    data = response.json()
-    assert "remaining" in data
-    # If limit is 2 and we mocked used as 1, remaining should be 1
-    assert data["remaining"] == 1
+    assert response.json()["remaining"] == 1

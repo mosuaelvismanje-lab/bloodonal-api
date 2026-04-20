@@ -1,4 +1,3 @@
-import json
 import hmac
 import hashlib
 import logging
@@ -8,30 +7,33 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# ✅ FIX 1: Use the project-wide standardized session dependency
-from app.api.dependencies import get_db_session
+# ✅ Aligned: Use the project-wide standardized session dependency
+from app.api.dependencies import get_current_user, get_db
 # ✅ Logic for wallet credit and usage unlocking
 from app.services.payment_confirmation import confirm_payment
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("bloodonal")
 
-# ✅ PREFIX: Standardized as /webhooks.
-# Main.py will include this as app.include_router(webhook_router)
-router = APIRouter(prefix="/webhooks", tags=["payment-webhooks"])
+# --- FIX: Prefix standardized to /webhooks ---
+# This will resolve to /v1/webhooks via the main.py v1 router loop
+router = APIRouter(
+    prefix="/webhooks",
+    tags=["payment-webhooks"],
+    redirect_slashes=False
+)
 
 # ✅ SECURITY: Strict Environment Loading
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
 if not WEBHOOK_SECRET:
-    logger.critical("🚨 SECURITY ALERT: WEBHOOK_SECRET is not set in environment variables!")
+    logger.critical("🚨 SECURITY ALERT: WEBHOOK_SECRET is not set! Webhook security is compromised.")
 
 
 def verify_signature(payload: bytes, signature: str) -> bool:
     """
-    Verify HMAC-SHA256 webhook signature to ensure request is from the provider.
+    Verify HMAC-SHA256 webhook signature to ensure the request is from the provider.
     """
     if not WEBHOOK_SECRET:
-        logger.error("Signature verification failed: WEBHOOK_SECRET is missing.")
         return False
 
     try:
@@ -56,45 +58,43 @@ async def payment_webhook(
             "status": "success",
             "amount": 500,
             "payer_phone": "237670000000",
-            "reference": "REF-ABC-123"  # The reference generated in your payment router
+            "reference": "REF-ABC-123"
         }),
-        db: AsyncSession = Depends(get_db_session),
+        db: AsyncSession = Depends(get_db),
         x_signature: Optional[str] = Header(None, alias="x-signature"),
 ):
     """
-    Automatic webhook handler.
-    On success, it updates the Payment record and increments the UsageCounter.
+    2026 Standardized Webhook Handler.
+    Validates incoming provider signals, updates Payment records, and unlocks service usage.
     """
 
-    # 1. Signature Verification (Security First)
+    # 1. Signature Verification (The "Guardian" Step)
     raw_body = await request.body()
     if not x_signature or not verify_signature(raw_body, x_signature):
-        logger.warning("Webhook rejected: Unauthorized or Invalid signature")
+        logger.warning("Webhook rejected: Unauthorized or Invalid signature from IP: %s", request.client.host)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid signature"
         )
 
     # 2. Extract Data
-    payload = payload_in
-    tx_id = payload.get("transaction_id")
-    status_value = payload.get("status")
-    payer_phone = payload.get("payer_phone")
-    amount = payload.get("amount")
-    reference = payload.get("reference")  # Crucial for linking back to your DB
+    tx_id = payload_in.get("transaction_id")
+    status_value = payload_in.get("status")
+    payer_phone = payload_in.get("payer_phone")
+    amount = payload_in.get("amount")
+    reference = payload_in.get("reference")
 
     if not tx_id or not status_value:
-        raise HTTPException(status_code=400, detail="Missing required fields")
+        raise HTTPException(status_code=400, detail="Missing required transaction fields")
 
-    # 3. Process Success Flow
-    # Standardizing for providers that might send "SUCCESSFUL" or "COMPLETED"
-
+    # 3. Success Flow Processing
+    # Standardizing across multiple 2026 provider formats
     if status_value.lower() in ["success", "successful", "completed"]:
         try:
-            # ✅ confirm_payment should now:
-            # 1. Update Payment model status to SUCCESS
-            # 2. Link the tx_id to the payment reference
-            # 3. Call UsageRepository.record_usage(paid=True) to increment the user's limit
+            # ✅ confirm_payment handles the following atomicity:
+            # - Updates Payment status to SUCCESS
+            # - Increments UsageCounter via Repository
+            # - Records the Transaction ID
             confirmed = await confirm_payment(
                 db=db,
                 transaction_id=tx_id,
@@ -104,19 +104,19 @@ async def payment_webhook(
             )
 
             if not confirmed:
-                logger.info(f"Webhook: Transaction {tx_id} was already processed or not found.")
+                logger.info("Webhook: Transaction %s was already processed or reference not found.", tx_id)
             else:
-                logger.info(f"✅ Service activated via webhook for {tx_id}")
+                logger.info("✅ Service unlocked via webhook for Reference: %s", reference)
 
         except Exception as exc:
             logger.exception("Automatic confirmation failed for tx=%s", tx_id)
-            # We return 500 so the provider retries the webhook later
+            # 500 signals the provider to retry later
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Internal processing error"
             ) from exc
     else:
-        logger.info(f"Webhook: Ignoring non-success status '{status_value}' for {tx_id}.")
+        logger.info("Webhook: Ignoring non-success status '%s' for %s.", status_value, tx_id)
 
-    # 4. Acknowledge Provider (Always return 200/OK if we received it successfully)
+    # 4. Acknowledge Provider
     return {"success": True, "transaction_id": tx_id}

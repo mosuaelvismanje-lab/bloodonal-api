@@ -16,7 +16,7 @@ from app.domain.usecases import SERVICE_FREE_LIMITS_SIMPLE as SERVICE_FREE_LIMIT
 # ✅ FIXED IMPORTS: Resolves the 'PaymentResponse' ImportError
 from app.schemas.payment import (
     PaymentRequest,
-    PaymentResponseOut,  # Standardized suffix
+    PaymentResponseOut,
     FreeUsageResponse,
     PaymentStatus,
 )
@@ -26,8 +26,9 @@ logger = logging.getLogger(__name__)
 # -------------------------
 # Router Configuration
 # -------------------------
+# --- FIX: Removed '/v1' from prefix to align with main.py versioning ---
 router = APIRouter(
-    prefix="/v1/payments/taxi",
+    prefix="/payments/taxi",
     tags=["taxi-payments"],
     redirect_slashes=False
 )

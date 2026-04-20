@@ -13,10 +13,10 @@ from app.api.dependencies import get_current_user, get_db
 from app.repositories.usage_repo import SQLAlchemyUsageRepository
 from app.domain.usecases import SERVICE_FREE_LIMITS_SIMPLE as SERVICE_FREE_LIMITS
 
-# ✅ FIXED IMPORTS: Standardized to PaymentResponseOut to solve ImportError
+# ✅ FIXED IMPORTS: Standardized to PaymentResponseOut
 from app.schemas.payment import (
     PaymentRequest,
-    PaymentResponseOut,  # Changed from PaymentResponse
+    PaymentResponseOut,
     FreeUsageResponse,
     PaymentStatus,
 )
@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 # -------------------------
 # Router Configuration
 # -------------------------
+# REMINDER: Remove '/v1' from prefix to allow main.py to handle versioning
 router = APIRouter(
-    prefix="/v1/payments/doctor-consults",
+    prefix="/payments/doctor-consults",
     tags=["doctor-payments"],
     redirect_slashes=False
 )
@@ -114,7 +115,6 @@ async def pay_doctor_consult(
         payment_ref = f"DOC-PAID-{uuid.uuid4().hex[:8].upper()}"
 
         # Standard Merchant Code for Doctor Service (Simulated)
-        # Format: *126*2*RECIPIENT*AMOUNT#
         merchant_ussd = "*126*2*671234567*2000#"
 
         return PaymentResponseOut(

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Router Configuration
 # -------------------------
 router = APIRouter(
-    prefix="/v1/payments/nurse-services",
+    prefix="/payments/nurse-services",
     tags=["nurse-payments"],
     redirect_slashes=False
 )

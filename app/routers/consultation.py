@@ -19,7 +19,7 @@ from app.adapters.chat_gateway import DummyChatGateway
 logger = logging.getLogger(__name__)
 
 # ✅ Versioning: Prefix set to /v1/consultation for production API standards
-router = APIRouter(prefix="/v1/consultation", tags=["consultation"])
+router = APIRouter(prefix="/consultation", tags=["consultation"])
 
 
 async def get_consultation_usecase(

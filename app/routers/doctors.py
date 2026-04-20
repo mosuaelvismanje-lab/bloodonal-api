@@ -18,7 +18,7 @@ from app.domain.usecases import ConsultationUseCase
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/v1/healthcare/doctors",
+    prefix="/healthcare/doctors",
     tags=["healthcare", "doctors"],
 )
 

@@ -1,11 +1,10 @@
-#app/gateways/mock_adapter
 import uuid
 import asyncio
 import logging
 import httpx
 from typing import Optional, Dict, Any
 from app.domain.gateways import IPaymentGateway, GatewayPaymentResponse
-from app.config import settings  # ✅ Integrated Centralized Settings
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -13,66 +12,69 @@ logger = logging.getLogger(__name__)
 class MockAdapter(IPaymentGateway):
     """
     Manual Transaction Adapter for Cameroon Mobile Money.
-    Generates dynamic USSD codes using merchant numbers from .env.
+    Generates dynamic USSD codes for Orange and MTN based on prefix detection.
     """
 
     def __init__(self):
-        # In-memory transaction registry for verification simulations
-        self._tx_store: set[str] = set()
+        # In-memory store to simulate transaction persistence for unit tests
+        self._tx_store: Dict[str, str] = {}
 
     async def charge(
             self,
             phone: str,
             amount: int,
             description: Optional[str] = None,
-            merchant_number: Optional[str] = None  # ✅ Matches new interface
+            merchant_number: Optional[str] = None
     ) -> GatewayPaymentResponse:
         """
-        Simulates a mobile money charge and generates USSD codes.
+        Detects the provider and generates the appropriate USSD string for
+        manual merchant payments in Cameroon.
         """
-        # Simulate network delay
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)  # Simulate network latency
 
-        tx_ref = f"MAN-{uuid.uuid4().hex[:6].upper()}"
-        self._tx_store.add(tx_ref)
+        tx_ref = f"MAN-{uuid.uuid4().hex[:8].upper()}"
+        self._tx_store[tx_ref] = "SUCCESS"
 
-        # 1. Detect Provider (Cameroon Prefixes)
+        # 1. Provider Detection (Cameroon Prefixes)
+        # Orange: 69x, 655, 656, 657, 658, 659
         is_orange = phone.startswith(("69", "655", "656", "657", "658", "659"))
 
-        # 2. Lookup Merchant Number (Priority: Passed argument > .env Settings)
+        # 2. Select Merchant Wallet (Arg Priority > Settings)
         if not merchant_number:
-            merchant_number = settings.ADMIN_ORANGE_NUMBER if is_orange else settings.ADMIN_MTN_NUMBER
+            merchant_number = (
+                settings.ADMIN_ORANGE_NUMBER if is_orange
+                else settings.ADMIN_MTN_NUMBER
+            )
 
-        # 3. Build USSD String
+        # 3. Generate USSD String
         if is_orange:
-            provider = "ORANGE MONEY"
+            provider = "ORANGE"
             ussd_code = f"#150*1*1*{merchant_number}*{amount}#"
         else:
-            provider = "MTN MOMO"
+            provider = "MTN"
             ussd_code = f"*126*9*{merchant_number}*{amount}#"
 
-        # Log for Admin Visibility
-        logger.info(f"💰 [MOCK] {provider} USSD: Dial {ussd_code} (Ref: {tx_ref})")
+        logger.info(f"PROMPT: {provider} Payment initiated for {phone}. USSD: {ussd_code}")
 
         return GatewayPaymentResponse(
             reference=tx_ref,
             status="PENDING",
             ussd_string=ussd_code,
-            provider_raw_response={"provider": provider, "manual": True, "merchant_wallet": merchant_number}
+            provider_raw_response={
+                "provider": provider,
+                "merchant": merchant_number,
+                "method": "manual_ussd"
+            }
         )
 
     async def verify_transaction(self, reference: str) -> str:
-        """
-        Matches IPaymentGateway interface exactly.
-        Returns: "SUCCESS", "FAILED", or "PENDING"
-        """
-        await asyncio.sleep(0.1)
-        return "SUCCESS" if reference in self._tx_store else "FAILED"
+        """Simulates immediate success for manual test paths."""
+        return self._tx_store.get(reference, "FAILED")
 
 
 class MTNMomoPaymentGateway(IPaymentGateway):
     """
-    Official API Adapter for MTN MoMo Cameroon (Collection API).
+    Production Adapter for MTN MoMo Cameroon Collection API.
     """
     BASE_URL = "https://proxy.momoapi.mtn.com/collection"
 
@@ -89,20 +91,19 @@ class MTNMomoPaymentGateway(IPaymentGateway):
     ) -> GatewayPaymentResponse:
         tx_ref = str(uuid.uuid4())
 
-        # Standard MTN Request-to-Pay Payload
         payload = {
             "amount": str(amount),
             "currency": "XAF",
             "externalId": tx_ref,
             "payer": {"partyIdType": "MSISDN", "partyId": phone},
             "payerMessage": description or "Service Payment",
-            "payeeNote": "Payment received",
+            "payeeNote": "Bloodonal Service Payment",
         }
 
         headers = {
             "X-Reference-Id": tx_ref,
             "Ocp-Apim-Subscription-Key": self.subscription_key,
-            "X-Target-Environment": settings.MTN_MOMO_ENVIRONMENT,  # ✅ Pulls "sandbox" or "mtncameroon"
+            "X-Target-Environment": settings.MTN_MOMO_ENVIRONMENT,
             "Authorization": f"Bearer {self.api_key}",
         }
 
@@ -114,6 +115,7 @@ class MTNMomoPaymentGateway(IPaymentGateway):
                     json=payload,
                 )
 
+            # 202 Accepted is the standard response for MTN Collection
             if resp.status_code not in (200, 202):
                 logger.error(f"MTN API Error: {resp.status_code} - {resp.text}")
                 return GatewayPaymentResponse(reference=tx_ref, status="FAILED")
@@ -125,11 +127,11 @@ class MTNMomoPaymentGateway(IPaymentGateway):
                 provider_raw_response=resp.json() if resp.text else {}
             )
         except Exception as exc:
-            logger.error(f"Network error reaching MTN MoMo: {exc}")
+            logger.error(f"MTN Connection Failure: {exc}")
             return GatewayPaymentResponse(reference=tx_ref, status="FAILED")
 
     async def verify_transaction(self, reference: str) -> str:
-        """Required by interface to poll for final status."""
+        """Polls the MTN API for the final status of a request."""
         headers = {
             "Ocp-Apim-Subscription-Key": self.subscription_key,
             "X-Target-Environment": settings.MTN_MOMO_ENVIRONMENT,
@@ -144,8 +146,9 @@ class MTNMomoPaymentGateway(IPaymentGateway):
                 )
 
             if resp.status_code == 200:
-                data = resp.json()
-                return data.get("status", "PENDING").upper()  # e.g., SUCCESSFUL, FAILED
+                status = resp.json().get("status", "PENDING")
+                return "SUCCESS" if status == "SUCCESSFUL" else status.upper()
+
             return "PENDING"
         except Exception:
             return "PENDING"

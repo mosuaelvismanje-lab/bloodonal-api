@@ -7,16 +7,20 @@ from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
 
-# ✅ Updated Modular Imports
-# Points to service_listing.py where ServiceUser and ServiceListing live
+# ✅ Standardized Imports
+from app.db.session import get_db
 from app.models.service_listing import ServiceUser, ServiceListing
 from app.schemas import serviceschema
-from app.db.session import get_db
 
+# Use project-standard logger
 log = logging.getLogger("bloodonal")
 
-router = APIRouter(prefix="/services", tags=["Service Stack"])
-
+# --- FIX: Removed '/api/v1' from prefix ---
+# As per your main.py setup, 'main.py' v1 router will handle the prefixing.
+router = APIRouter(
+    prefix="/services",
+    tags=["Service Stack"]
+)
 
 @router.get("/search", response_model=List[serviceschema.SearchItemOut])
 async def global_modular_search(
@@ -26,11 +30,7 @@ async def global_modular_search(
 ):
     """
     ### 2026 High-Performance Global Search
-    This endpoint performs a dual-layer asynchronous search across:
-    1. **Service Providers:** Profiles of actors (Doctors, Donors, etc.)
-    2. **Service Listings:** The polymorphic requests (Blood, Taxi, etc.)
-
-    Uses **Async SQLAlchemy 2.0** and the consolidated ServiceListing model.
+    Performs asynchronous dual-layer search across Service Providers and Listings.
     """
     search_pattern = f"%{q}%"
     results = []
@@ -63,7 +63,6 @@ async def global_modular_search(
             ))
 
         # --- LAYER 2: LISTINGS SEARCH (ServiceListing) ---
-        # Note: We search 'ServiceListing' now instead of 'ServiceRequest'
         listing_stmt = (
             select(ServiceListing)
             .where(

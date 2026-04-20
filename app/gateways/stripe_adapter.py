@@ -1,4 +1,3 @@
-#app/gateways/stripe_adapter
 import uuid
 import httpx
 import logging
@@ -11,7 +10,8 @@ logger = logging.getLogger(__name__)
 class StripeAdapter(IPaymentGateway):
     """
     Stripe adapter synchronized with the domain IPaymentGateway interface.
-    Returns GatewayPaymentResponse for consistency across the app.
+    Handles global credit/debit card processing while maintaining
+    the same interface as local Mobile Money providers.
     """
 
     BASE_URL = "https://api.stripe.com/v1"
@@ -24,25 +24,28 @@ class StripeAdapter(IPaymentGateway):
             phone: str,
             amount: int,
             description: Optional[str] = None,
-            merchant_number: Optional[str] = None  # ✅ Added to satisfy interface signature
+            merchant_number: Optional[str] = None  # ✅ Interface parity
     ) -> GatewayPaymentResponse:
         """
         Initiates a Stripe PaymentIntent.
-        Note: Stripe amounts are usually in subunits (cents).
-        For XAF, verify if your account supports zero-decimal currency.
+        Args:
+            phone: Customer phone number (stored in metadata).
+            amount: Transaction amount (Stripe expects subunit e.g. 100 for 1.00).
+            description: Label for the Stripe dashboard.
+            merchant_number: Unused by Stripe, but required by interface.
         """
 
-        # Stripe expects application/x-www-form-urlencoded
+        # Stripe uses application/x-www-form-urlencoded
         payload = {
             "amount": amount,
             "currency": "xaf",
-            "description": description or "Consultation Fee",
-            "metadata[phone]": phone,
+            "description": description or "Bloodonal Service Fee",
+            "metadata[customer_phone]": phone,
         }
 
-        # Optional: Store merchant_number in metadata for audit trails
+        # Storing the merchant_number in metadata if provided for audit parity
         if merchant_number:
-            payload["metadata[merchant_wallet]"] = merchant_number
+            payload["metadata[merchant_wallet_ref]"] = merchant_number
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -53,7 +56,7 @@ class StripeAdapter(IPaymentGateway):
                 )
 
             if resp.status_code >= 400:
-                logger.error(f"Stripe API Error: {resp.text}")
+                logger.error(f"Stripe API Error: {resp.status_code} - {resp.text}")
                 return GatewayPaymentResponse(
                     reference=f"stripe-err-{uuid.uuid4().hex[:6]}",
                     status="FAILED",
@@ -63,26 +66,27 @@ class StripeAdapter(IPaymentGateway):
             data = resp.json()
             provider_id = data.get("id")
 
-            # Standardize the status (Stripe 'succeeded' -> Domain 'SUCCESS')
+            # Map Stripe statuses to Domain statuses
+            # Stripe states: requires_payment_method, requires_confirmation,
+            # requires_action, processing, requires_capture, canceled, succeeded
             stripe_status = data.get("status")
             final_status = "PENDING"
 
             if stripe_status == "succeeded":
                 final_status = "SUCCESS"
-            elif stripe_status in ["requires_payment_method", "requires_action"]:
-                final_status = "PENDING"  # Often waiting for 3D Secure
             elif stripe_status in ["canceled"]:
                 final_status = "FAILED"
+            # 'requires_action' usually means 3D Secure is pending
 
             return GatewayPaymentResponse(
                 reference=provider_id,
                 status=final_status,
-                ussd_string=None,  # Not used for Stripe
+                ussd_string=None,  # Not applicable for Stripe
                 provider_raw_response=data
             )
 
         except Exception as e:
-            logger.error(f"Stripe connection failure: {str(e)}")
+            logger.error(f"Stripe network failure: {str(e)}")
             return GatewayPaymentResponse(
                 reference="connection-error",
                 status="FAILED"
@@ -90,11 +94,10 @@ class StripeAdapter(IPaymentGateway):
 
     async def verify_transaction(self, reference: str) -> str:
         """
-        ✅ Matches the IPaymentGateway interface signature.
-        Checks the current status of a Stripe PaymentIntent.
+        Polls the current status of a Stripe PaymentIntent.
         """
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(
                     f"{self.BASE_URL}/payment_intents/{reference}",
                     headers={"Authorization": f"Bearer {self.api_key}"},
@@ -110,5 +113,5 @@ class StripeAdapter(IPaymentGateway):
 
             return "PENDING"
         except Exception as e:
-            logger.error(f"Error verifying Stripe transaction {reference}: {e}")
+            logger.error(f"Failed to verify Stripe reference {reference}: {e}")
             return "PENDING"
