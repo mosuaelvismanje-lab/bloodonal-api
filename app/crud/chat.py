@@ -1,4 +1,3 @@
-# app/crud/chat.py
 from __future__ import annotations
 import logging
 from typing import List, Optional
@@ -65,13 +64,16 @@ async def create_message(db: AsyncSession, obj_in: MessageCreate) -> Message:
     return db_obj
 
 
-async def get_room_messages(
+async def list_messages(
         db: AsyncSession,
         room_id: int,
         limit: int = 50,
         skip: int = 0
 ) -> List[Message]:
-    """Fetches message history for a room, sorted by oldest first for the UI."""
+    """
+    Fetches message history for a room, sorted by oldest first for the UI.
+    Renamed from get_room_messages to match modular import standards.
+    """
     query = (
         select(Message)
         .where(Message.room_id == room_id)

@@ -1,9 +1,11 @@
 import logging
+import asyncio
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import update, func, cast, Text
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, DBAPIError
 
+# Importing from session to ensure we use the updated engine with 60s timeout
 from app.db.session import AsyncSessionLocal
 from app.models.payment import Payment, PaymentStatus
 
@@ -12,12 +14,13 @@ logger = logging.getLogger(__name__)
 PAYMENT_EXPIRY_MINUTES = 15
 VERIFICATION_STALE_HOURS = 24
 
+
 async def expire_unconfirmed_payments():
     """
     Mark old pending payments as FAILED in bulk.
-    Final Fix: Uses Python dict {} for JSONB casting to avoid 'scalar' errors
-    and uses the Text class for the ARRAY type mapping.
+    Updated for 2026: Includes resiliency for high-latency Neon connections.
     """
+    # We open the session here, but use a try block to catch connection drops
     async with AsyncSessionLocal() as session:
         try:
             now = datetime.now(timezone.utc)
@@ -38,7 +41,6 @@ async def expire_unconfirmed_payments():
                     Payment.status: PaymentStatus.FAILED,
                     Payment.updated_at: now,
                     Payment.metadata_json: func.jsonb_set(
-                        # Use a real Python dict {} so Postgres sees an OBJECT, not a string
                         func.coalesce(json_as_jsonb, cast({}, JSONB)),
                         cast(['expiry_reason'], ARRAY(Text)),
                         cast("ussd_timeout", JSONB)
@@ -64,8 +66,11 @@ async def expire_unconfirmed_payments():
                 })
             )
 
+            # ✅ RESILIENCY BLOCK: Execute and Commit
+            # If the connection is closed by Neon/Network during this, we catch it.
             res_p = await session.execute(stmt_pending)
             res_s = await session.execute(stmt_stale)
+
             await session.commit()
 
             p_rows = res_p.rowcount or 0
@@ -74,6 +79,14 @@ async def expire_unconfirmed_payments():
             if (p_rows + s_rows) > 0:
                 logger.info(f"🧹 Janitor: Cleaned {p_rows} pending and {s_rows} stale payments.")
 
+        except (DBAPIError, ConnectionResetError) as connection_err:
+            # ✅ Specific catch for the Limbe/Singapore connection drops
+            await session.rollback()
+            logger.warning(
+                f"📡 Database connection flickered during Janitor run. "
+                f"Operation aborted, will retry next cycle. Details: {str(connection_err)}"
+            )
         except Exception as e:
+            # For other logic errors, we still want the full traceback
             await session.rollback()
             logger.error(f"💥 Janitor failed: {str(e)}", exc_info=True)

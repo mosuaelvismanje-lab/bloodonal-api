@@ -17,7 +17,7 @@ from app.schemas.blood_donors import (
 logger = logging.getLogger(__name__)
 
 # Versioning: Prefix set to /v1/blood-donors
-router = APIRouter(prefix="/v1/blood-donors", tags=["BloodDonors"])
+router = APIRouter(prefix="/blood-donors", tags=["BloodDonors"])
 
 
 # -------------------------------------------------

@@ -22,8 +22,8 @@ from app.crud.healthcare_provider import (
 
 logger = logging.getLogger(__name__)
 
-# ✅ Versioning: Prefix set to /v1 to match production API layout
-router = APIRouter(prefix="/v1/providers", tags=["HealthcareProviders"])
+# ✅ OPTION A: Clean prefix. Versioning (/v1) is mounted in main.py
+router = APIRouter(prefix="/providers", tags=["HealthcareProviders"])
 
 
 # -------------------------------------------------
@@ -33,21 +33,29 @@ router = APIRouter(prefix="/v1/providers", tags=["HealthcareProviders"])
 async def create(
         p: HealthcareProviderCreate,
         db: AsyncSession = Depends(get_db_session),
-        current_user=Depends(get_current_user)  # ✅ Secure: Admin/Staff only in production
+        current_user=Depends(get_current_user)
 ):
+    """
+    Registers a new healthcare provider (Doctor, Nurse, etc.).
+    Requires admin/staff authentication.
+    """
     try:
         new_provider = await create_provider(db, p)
-        await db.commit()  # ✅ Persistence: Required for AsyncSession
+        await db.commit()
         await db.refresh(new_provider)
+        logger.info(f"✅ Provider created: {new_provider.id} by {current_user.uid}")
         return new_provider
     except Exception as e:
         await db.rollback()
-        logger.error(f"Failed to create provider: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error creating provider profile")
+        logger.error(f"❌ Failed to create provider: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error creating provider profile"
+        )
 
 
 # -------------------------------------------------
-# LIST/SEARCH PROVIDERS (Public or Protected)
+# LIST/SEARCH PROVIDERS (Public)
 # -------------------------------------------------
 @router.get("/", response_model=List[Union[HealthcareProvider, HealthcareProviderShort]])
 async def list_all(
@@ -58,16 +66,17 @@ async def list_all(
         db: AsyncSession = Depends(get_db_session)
 ):
     """
-    Search providers with autocomplete support.
-    Example: /v1/providers/?name=General
+    Search providers with autocomplete and type filtering.
     """
     try:
-        # Search logic usually doesn't need explicit commits
         providers = await get_providers(db, skip, limit, service_type, name)
         return providers
     except Exception as e:
-        logger.error(f"Search failed: {str(e)}")
-        raise HTTPException(status_code=500, detail="Search service temporarily unavailable")
+        logger.error(f"❌ Provider search failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Search service temporarily unavailable"
+        )
 
 
 # -------------------------------------------------
@@ -91,18 +100,26 @@ async def update(
         db: AsyncSession = Depends(get_db_session),
         current_user=Depends(get_current_user)
 ):
+    """
+    Update provider details. Uses partial updates (exclude_unset=True).
+    """
     try:
-        # Use exclude_unset=True so we don't overwrite existing data with Nulls
         updated = await update_provider(db, provider_id, data.model_dump(exclude_unset=True))
         if not updated:
             raise HTTPException(status_code=404, detail="Provider not found")
 
         await db.commit()
+        await db.refresh(updated) # ✅ Refresh to ensure we return the latest DB state
         return updated
+    except HTTPException:
+        raise # Re-raise 404s
     except Exception as e:
         await db.rollback()
-        logger.error(f"Update failed for provider {provider_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update provider")
+        logger.error(f"❌ Update failed for provider {provider_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update provider"
+        )
 
 
 # -------------------------------------------------
@@ -115,12 +132,18 @@ async def delete(
         current_user=Depends(get_current_user)
 ):
     try:
-        deleted = await delete_provider(db, provider_id)
-        if not deleted:
+        success = await delete_provider(db, provider_id)
+        if not success:
             raise HTTPException(status_code=404, detail="Provider not found")
 
         await db.commit()
         return None
-    except Exception:
+    except HTTPException:
+        raise
+    except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail="Internal server error during deletion")
+        logger.error(f"❌ Deletion failed for provider {provider_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during deletion"
+        )

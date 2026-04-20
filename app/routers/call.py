@@ -17,7 +17,7 @@ from app.models.call_session import CallMode
 logger = logging.getLogger(__name__)
 
 # ✅ Versioning: Prefix set to /v1 to match production API layout
-router = APIRouter(prefix="/v1/calls", tags=["calls"])
+router = APIRouter(prefix="/calls", tags=["calls"])
 
 
 # -------------------------------------------------

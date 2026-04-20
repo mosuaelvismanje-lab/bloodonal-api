@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
+from uuid import UUID
 
 
 class ServiceListingBase(BaseModel):
@@ -20,21 +23,18 @@ class ServiceListingBase(BaseModel):
 class ServiceListingCreate(ServiceListingBase):
     """
     Used when creating a new service request.
-    The Orchestrator will use this to build the initial ServiceListing.
     """
-    user_id: str
-    # Usually set by the Orchestrator/Model, but can be overridden
+    user_id: UUID
     expires_at: Optional[datetime] = None
 
 
 class ServiceListingResponse(ServiceListingBase):
     """
     The polymorphic response returned to the Mobile/Web UI.
-    Includes the 'Switches' set by the Orchestrator.
     """
-    id: int
-    user_id: str
-    provider_id: Optional[str] = None
+    id: UUID
+    user_id: UUID
+    provider_id: Optional[UUID] = None
     status: str
     is_published: bool
     is_paid: bool
@@ -42,11 +42,26 @@ class ServiceListingResponse(ServiceListingBase):
     updated_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
 
-    # ✅ Pydantic V2 configuration replacing 'class Config'
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True
     )
+
+
+# ✅ FIXED: Added SearchItemOut for the Global Search Engine
+class SearchItemOut(BaseModel):
+    """
+    Unified search result schema.
+    Used to display both Users (Providers) and Requests in one list.
+    """
+    id: str
+    title: str
+    subtitle: str
+    type: str = Field(..., description="'provider' or 'listing'")
+    imageUrl: Optional[str] = None
+    category: str = Field(..., description="e.g., 'nurse', 'blood-request', 'emergency'")
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ✅ Logic for the "Provider" side of the app

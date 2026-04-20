@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-# 1. Base Identity & Access
+# 1. Base Identity & Modular Profile Hub
 from .user import User
-from .service_listing import ServiceListing  # The polymorphic bridge
+from .service_listing import ServiceUser, ServiceListing  # ✅ Added ServiceUser
 
 # 2. Healthcare & Blood Services
 from .blood_donor import BloodDonor
@@ -29,7 +29,8 @@ from .payment import Payment, PaymentStatus
 # ---------------------------------------------------------
 __all__ = [
     "User",
-    "ServiceListing",
+    "ServiceUser",      # ✅ Exported for Profile lookups
+    "ServiceListing",   # ✅ Exported for Search & Orchestration
     "BloodDonor",
     "BloodRequest",
     "HealthcareProvider",
@@ -37,7 +38,7 @@ __all__ = [
     "TransportOffer",
     "TransportRequest",
     "ChatRoom",
-    "Message",  # ✅ Required for Chat Relationship indexing
+    "Message",          # ✅ Required for Chat Relationship indexing
     "Doctor",
     "Payment",
     "PaymentStatus",
