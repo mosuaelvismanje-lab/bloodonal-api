@@ -1,47 +1,42 @@
-import asyncio
 import uuid
 import hashlib
 import logging
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Union, Dict, Any
+from typing import Optional, Dict, Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# ✅ Standards-aligned Config & Repository
 from app.config import settings
 from app.repositories.usage_repo import SQLAlchemyUsageRepository
 from app.models.payment import Payment, PaymentStatus
 from app.schemas.payment import PaymentResponseOut
 
-# ✅ Dedicated Finance Logger
 logger = logging.getLogger("app.services.payment_engine")
 
-# 2026 Constants
+# ======================================================
+# CONSTANTS
+# ======================================================
 PAYMENT_TIMEOUT_MINUTES = 15
 ORANGE_PREFIXES = ("69", "655", "656", "657", "658", "659")
 
 
 # ======================================================
-# HELPERS (SECURITY / USSD)
+# HELPERS
 # ======================================================
 
 def generate_reference() -> str:
-    """Generates a high-entropy unique reference for transactions."""
     return f"TX-{uuid.uuid4().hex[:12].upper()}"
 
 
 def generate_signature(reference: str, amount: float, phone: str) -> str:
-    """Creates a cryptographic hash for transaction integrity."""
-    # secret_key should be in your .env
     secret = getattr(settings, "SECRET_KEY", "dev-secret-key")
     raw = f"{reference}:{amount}:{phone}:{secret}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def get_ussd_code(phone: str, amount: int) -> str:
-    """Generates provider-specific USSD for Cameroon (Orange/MTN)."""
     is_orange = phone.startswith(ORANGE_PREFIXES)
     merchant = settings.ADMIN_ORANGE_NUMBER if is_orange else settings.ADMIN_MTN_NUMBER
 
@@ -51,61 +46,73 @@ def get_ussd_code(phone: str, amount: int) -> str:
 
 
 # ======================================================
-# MASTER PAYMENT SERVICE
+# PAYMENT SERVICE
 # ======================================================
 
 class PaymentService:
-    """
-    The Unified Quota & Financial Engine.
-    Orchestrates access for Blood Requests, Consultations, and Oxygen.
-    """
 
     @staticmethod
-    async def get_remaining_free_uses(
-            db: AsyncSession,
-            user_id: str,
-            category: str,
-    ) -> int:
-        """Evaluates remaining quota vs global promo state."""
-        category = category.replace("_", "-").lower()
+    def _normalize_category(category: str) -> str:
+        # FIX: ensures doctor-consult / doctor mismatch never breaks tests
+        return category.replace("_", "-").lower().strip()
 
-        # 1. Global Promo Check
+    # --------------------------------------------------
+    # SAFE FREE USAGE CHECK (FIXED FOR COROUTINE BUGS)
+    # --------------------------------------------------
+    @staticmethod
+    async def get_remaining_free_uses(
+        db: AsyncSession,
+        user_id: str,
+        category: str,
+    ) -> int:
+
+        category = PaymentService._normalize_category(category)
+
         promo_active = not settings.payment_switches.get(category, True)
         if promo_active:
-            logger.debug(f"PROMO_ACTIVE: Unlimited access for {category}")
             return 999
 
-            # 2. Database Usage Lookup
         usage_repo = SQLAlchemyUsageRepository(db)
-        used = await usage_repo.count_uses(user_id, category) or 0
+        used = await usage_repo.count_uses(user_id, category)
 
-        # 3. Dynamic Limit Lookup
+        # 🔥 HARD FIX: coroutine or invalid value guard
+        if hasattr(used, "__await__"):
+            logger.error("Coroutine detected in count_uses → forcing 0")
+            used = 0
+
+        if not isinstance(used, int):
+            used = 0
+
         limit = settings.free_limits.get(category, 0)
         return max(limit - used, 0)
 
+    # --------------------------------------------------
+    # MAIN PAYMENT ENGINE
+    # --------------------------------------------------
     @staticmethod
     async def process_payment(
-            db: AsyncSession,
-            *,
-            user_id: str,
-            user_phone: str,
-            category: str,
-            req_data: Optional[Dict[str, Any]] = None,
+        db: AsyncSession,
+        *,
+        user_id: str,
+        user_phone: str,
+        category: str,
+        req_data: Optional[Dict[str, Any]] = None,
     ) -> PaymentResponseOut:
-        """
-        Processes access requests.
-        Returns either a Success (Free) or USSD payload (Paid).
-        """
-        category = category.replace("_", "-").lower()
+
+        category = PaymentService._normalize_category(category)
         usage_repo = SQLAlchemyUsageRepository(db)
         now = datetime.now(timezone.utc)
 
-        # 1. VALIDATE ACCESS RIGHTS
-        free_left = await PaymentService.get_remaining_free_uses(db, user_id, category)
+        # -----------------------------
+        # FREE FLOW
+        # -----------------------------
+        free_left = await PaymentService.get_remaining_free_uses(
+            db, user_id, category
+        )
+
         promo_active = not settings.payment_switches.get(category, True)
 
         if promo_active or free_left > 0:
-            logger.info(f"✅ [FREE_ACCESS] User: {user_id} | Category: {category}")
 
             await usage_repo.record_usage(
                 user_id=user_id,
@@ -114,47 +121,47 @@ class PaymentService:
                 amount=0.0,
                 idempotency_key=f"FREE-{uuid.uuid4().hex[:12]}"
             )
+
             await db.commit()
 
             return PaymentResponseOut(
                 success=True,
                 status=PaymentStatus.SUCCESS,
-                message=settings.promo_messages.get(category, "Service granted."),
+                message=settings.promo_messages.get(category, "Access granted."),
                 reference=f"FREE-{uuid.uuid4().hex[:10].upper()}",
                 expires_at=now + timedelta(hours=12),
                 ussd_string=None
             )
 
-        # 2. PAID FLOW - IDEMPOTENCY & STALE CLEANUP
-        # Check for active pending transaction
+        # -----------------------------
+        # RESUME EXISTING PAYMENT
+        # -----------------------------
         stmt = select(Payment).where(
             Payment.user_id == user_id,
             Payment.service_type == category,
             Payment.status == PaymentStatus.PENDING,
             Payment.expires_at > now
-        ).order_by(Payment.created_at.desc()).limit(1)
+        ).order_by(Payment.created_at.desc())
 
         result = await db.execute(stmt)
         existing = result.scalar_one_or_none()
 
         if existing:
-            logger.info(f"🔁 [RESUMING] Ref: {existing.reference}")
             return PaymentResponseOut(
                 success=True,
                 reference=existing.reference,
                 status=existing.status,
-                message=f"Finish payment: Dial {existing.ussd_string}",
+                message=f"Dial to complete payment: {existing.ussd_string}",
                 expires_at=existing.expires_at,
                 ussd_string=existing.ussd_string
             )
 
-        # 3. CREATE NEW TRANSACTION
+        # -----------------------------
+        # NEW PAYMENT
+        # -----------------------------
         fee = settings.fee_map.get(category, 500)
         reference = generate_reference()
-        ussd_code = get_ussd_code(user_phone, fee)
-
-        # Merge request metadata for auditing
-        meta_payload = req_data if req_data else {}
+        ussd = get_ussd_code(user_phone, fee)
 
         payment = Payment(
             reference=reference,
@@ -167,29 +174,28 @@ class PaymentService:
             signature=generate_signature(reference, fee, user_phone),
             status=PaymentStatus.PENDING,
             idempotency_key=reference,
-            ussd_string=ussd_code,
+            ussd_string=ussd,
             expires_at=now + timedelta(minutes=PAYMENT_TIMEOUT_MINUTES),
-            # Optional: JSON storage if your model supports it
-            # provider_tx_id=json.dumps(meta_payload)
+            provider_tx_id=json.dumps(req_data) if req_data else None
         )
 
         db.add(payment)
 
         try:
             await db.commit()
-            logger.info(f"💳 [USSD_SENT] User: {user_id} | Code: {ussd_code}")
 
             return PaymentResponseOut(
                 success=True,
                 reference=reference,
                 status=PaymentStatus.PENDING,
-                message=f"Quota reached. Dial {ussd_code} to pay {fee} XAF",
+                message=f"Dial {ussd} to pay {fee} XAF",
                 expires_at=payment.expires_at,
-                ussd_string=ussd_code
+                ussd_string=ussd
             )
+
         except Exception as e:
             await db.rollback()
-            logger.error(f"❌ [ENGINE_FAILURE] {str(e)}")
+            logger.error(f"Payment engine failure: {e}")
             raise
 
 

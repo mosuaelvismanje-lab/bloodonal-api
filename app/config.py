@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import os
 import logging
 from pathlib import Path
@@ -52,7 +53,7 @@ class Settings(BaseSettings):
 
     # Anticipating an increase past 291 connections:
     DB_POOL_SIZE: int = 100  # Per-instance pool size
-    DB_MAX_OVERFLOW: int = 50 # Allows bursts when scaling up
+    DB_MAX_OVERFLOW: int = 50  # Allows bursts when scaling up
 
     # -------------------------
     # Redis & Background Tasks
@@ -91,6 +92,9 @@ class Settings(BaseSettings):
     MTN_MOMO_API_KEY: Optional[str] = None
     MTN_MOMO_SUBSCRIPTION_KEY: Optional[str] = None
     MTN_MOMO_ENVIRONMENT: str = "sandbox"
+
+    # ✅ ADD THIS
+    GATEWAY_TIMEOUT: float = 30.0
 
     # -------------------------
     # ✅ CALLS & VIDEO (Jitsi Integration)

@@ -1,12 +1,13 @@
 import logging
 from typing import Union, Any
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status, BackgroundTasks
 
 # ✅ MASTER ENGINE IMPORTS
 from app.services.payment_service import PaymentService
-from app.services.orchestrator import ServiceOrchestrator  # ✅ NEW: For activation
-from app.services.notification_service import notification_service  # ✅ NEW: For clean dispatch
+from app.services.orchestrator import ServiceOrchestrator
+from app.services.notification_service import notification_service
 from app.crud.blood_request import create_blood_request as crud_create_blood_request
 from app.schemas.blood_requests import BloodRequestCreate
 from app.schemas.payment import PaymentResponseOut
@@ -15,74 +16,95 @@ logger = logging.getLogger(__name__)
 
 
 class BloodRequestService:
+    """
+    2026 Unified Blood Request Engine
+    - Payment-first architecture
+    - Free usage auto-activation
+    - Background notifications
+    """
+
+    CATEGORY = "blood-request"
+    NOTIFICATION_CATEGORY = "medical"
+
     def __init__(self, db: AsyncSession):
         self.db = db
-        # Initialize the orchestrator to handle the publication logic
         self.orchestrator = ServiceOrchestrator(db)
 
-    async def create_request_orchestrator(
-            self,
-            req: BloodRequestCreate,
-            user_uid: str,
-            background_tasks: BackgroundTasks
+    # =========================================================
+    # MAIN ENTRY POINT (FIXED NAME FOR ROUTER COMPATIBILITY)
+    # =========================================================
+    async def create_blood_request_orchestrator(
+        self,
+        req: BloodRequestCreate,
+        user_uid: str,
+        background_tasks: BackgroundTasks
     ) -> Union[Any, PaymentResponseOut]:
+
         """
-        2026 Modular Orchestrator:
-        1. Delegates Quota/Payment to Master PaymentService.
-        2. If Payment is PENDING (USSD), exits and returns USSD payload.
-        3. If Payment is SUCCESS (Free/Promo), persists data and triggers Orchestrator.
+        1. Check payment / quota via PaymentService
+        2. If PENDING → return USSD response immediately
+        3. If SUCCESS → create record + orchestrate + notify
         """
 
-        # --- 1. DELEGATE TO MASTER PAYMENT ENGINE ---
-        # This handles: Quota checks, Promo switches, and USSD generation
+        # -----------------------------
+        # 1. PAYMENT ENGINE CALL
+        # -----------------------------
         payment_status = await PaymentService.process_payment(
             db=self.db,
             user_id=user_uid,
             user_phone=req.phone,
-            category="blood-request"
+            category=self.CATEGORY,
+            req_data=req.model_dump() if hasattr(req, "model_dump") else req.dict()
         )
 
-        # If user must pay or has a pending transaction, return the USSD info immediately
+        # -----------------------------
+        # 2. PAYMENT REQUIRED FLOW
+        # -----------------------------
         if payment_status.status == "PENDING":
-            logger.info(f"Payment Required for User {user_uid}. Returning USSD.")
+            logger.info(f"💳 Payment required for {user_uid}")
             return payment_status
 
-        # --- 2. PERSIST MEDICAL DATA (Cleared Path) ---
+        # -----------------------------
+        # 3. FREE / SUCCESS FLOW
+        # -----------------------------
         try:
-            # Step A: Create the actual Blood Request medical record
-            # We do not commit yet; we want the orchestrator to finish the job
-            br = await crud_create_blood_request(self.db, req, user_id=user_uid)
+            # Create DB record
+            br = await crud_create_blood_request(
+                self.db,
+                req,
+                user_id=user_uid
+            )
 
-            # Step B: Trigger Orchestrator for FREE/SUCCESS path
-            # This marks the ServiceListing as published and handles notifications
+            # Activate via orchestrator
             activated = await self.orchestrator.handle_free_activation(
                 user_id=user_uid,
-                service_type="blood-request"
+                service_type=self.CATEGORY
             )
 
             if not activated:
-                raise Exception("Service Orchestrator failed to publish listing.")
+                raise Exception("Orchestrator activation failed")
 
-            # We refresh to ensure we return the final state
             await self.db.refresh(br)
 
-            # --- 3. DISPATCH NOTIFICATIONS (Async) ---
-            # We now use the dedicated notification_service instead of importing from endpoints
+            # -----------------------------
+            # 4. ASYNC NOTIFICATIONS
+            # -----------------------------
             background_tasks.add_task(
                 notification_service.trigger_service_notifications,
-                service_type="blood-request",
-                category="medical",
+                service_type=self.CATEGORY,
+                category=self.NOTIFICATION_CATEGORY,
                 listing_id=str(br.id),
                 user_id=user_uid
             )
 
-            logger.info(f"✅ Blood Request {br.id} activated via Orchestrator for {user_uid}")
+            logger.info(f"✅ Blood request activated: {br.id} for {user_uid}")
             return br
 
         except Exception as e:
             await self.db.rollback()
-            logger.error(f"💥 BLOOD_SERVICE_ERROR: {str(e)}", exc_info=True)
+            logger.error(f"💥 BloodRequestService error: {e}", exc_info=True)
+
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to finalize blood request activation."
+                detail="Failed to process blood request"
             )
