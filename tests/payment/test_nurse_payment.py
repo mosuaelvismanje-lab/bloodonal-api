@@ -3,16 +3,12 @@ from fastapi import status
 from unittest.mock import AsyncMock
 
 
-# -------------------------
-# Test Cases
-# -------------------------
+# =========================================================
+# NURSE PAYMENT TEST
+# =========================================================
 @pytest.mark.asyncio
 @pytest.mark.parametrize("client", ["nurse_test_user_789"], indirect=True)
 async def test_pay_nurse_success(client, monkeypatch):
-    """
-    Test successful nurse service payment with engine argument verification.
-    Uses the centralized 'client' fixture from tests/conftest.py.
-    """
 
     from app.schemas.payment import PaymentResponseOut, PaymentStatus
     from datetime import datetime, timezone, timedelta
@@ -26,7 +22,6 @@ async def test_pay_nurse_success(client, monkeypatch):
         ussd_string="*123#"
     )
 
-    # Patch service
     mock_service = AsyncMock(return_value=mock_out)
 
     monkeypatch.setattr(
@@ -42,16 +37,27 @@ async def test_pay_nurse_success(client, monkeypatch):
         headers={"X-Idempotency-Key": "nurse-test-key-123"}
     )
 
+    # -------------------------
+    # ASSERT RESPONSE
+    # -------------------------
     assert response.status_code == status.HTTP_200_OK
 
-    # Ensure service was called
+    data = response.json()
+
+    assert data["success"] is True
+    assert data["reference"] == "NURSE-REF-123"
+    assert data["status"] == "PENDING"
+    assert data["ussd_string"] == "*123#"
+
+    # -------------------------
+    # ASSERT SERVICE CALL
+    # -------------------------
     assert mock_service.call_count == 1
 
     _, kwargs = mock_service.call_args
 
-    # ✅ VALID ASSERTIONS
     assert kwargs["user_phone"] == "670000000"
     assert kwargs["category"] == "nurse-services"
 
-    # ✅ CORRECT USER ASSERTION (comes from parametrize)
-    assert kwargs["user_id"] == "nurse_test_user_789"
+    # ✅ strict and consistent user validation
+    assert kwargs["user_id"] == client.test_user.uid

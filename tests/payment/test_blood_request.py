@@ -10,7 +10,6 @@ from app.models.payment import PaymentStatus
 @pytest.mark.asyncio
 @pytest.mark.parametrize("client", ["blood_user_free_001"], indirect=True)
 async def test_pay_blood_request_success(client, monkeypatch):
-    """Test FREE PATH with service argument validation."""
 
     from app.schemas.payment import PaymentResponseOut
     from datetime import datetime, timezone, timedelta
@@ -44,16 +43,14 @@ async def test_pay_blood_request_success(client, monkeypatch):
     assert data["status"] == "SUCCESS"
     assert data["reference"] == "FREE-TEST-REF"
 
-    # Ensure service called
     assert mock_service.call_count == 1
 
     _, kwargs = mock_service.call_args
 
-    # ✅ SAFE ASSERTIONS
     assert kwargs["user_phone"] == "670556321"
     assert kwargs["category"] == "blood-request"
 
-    # ✅ CORRECT USER ASSERTION
+    # ✅ strict user validation
     assert kwargs["user_id"] == "blood_user_free_001"
 
 
@@ -63,7 +60,6 @@ async def test_pay_blood_request_success(client, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("client", ["blood_user_paid_002"], indirect=True)
 async def test_pay_blood_request_paid_path(client, monkeypatch):
-    """Test PAID flow (USSD generation)."""
 
     from app.schemas.payment import PaymentResponseOut
 
@@ -99,9 +95,10 @@ async def test_pay_blood_request_paid_path(client, monkeypatch):
 
     _, kwargs = mock_service.call_args
 
-    # ✅ VALIDATE INPUT FLOW
     assert kwargs["user_phone"] == "677000000"
     assert kwargs["category"] == "blood-request"
+
+    # ✅ strict validation
     assert kwargs["user_id"] == "blood_user_paid_002"
 
 
@@ -111,7 +108,6 @@ async def test_pay_blood_request_paid_path(client, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("client", ["blood_user_quota_003"], indirect=True)
 async def test_get_remaining_blood_requests(client, monkeypatch):
-    """Test quota checking endpoint."""
 
     mock_service = AsyncMock(return_value=3)
 
@@ -128,13 +124,11 @@ async def test_get_remaining_blood_requests(client, monkeypatch):
     assert response.status_code == status.HTTP_200_OK
 
     data = response.json()
-
     assert data["remaining"] == 3
 
     assert mock_service.call_count == 1
 
     _, kwargs = mock_service.call_args
 
-    # ✅ OPTIONAL BUT STRONG CHECK
     assert kwargs["user_id"] == "blood_user_quota_003"
     assert kwargs["category"] == "blood-request"

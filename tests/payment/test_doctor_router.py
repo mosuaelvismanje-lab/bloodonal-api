@@ -8,10 +8,6 @@ from unittest.mock import AsyncMock
 # =========================================================
 @pytest.mark.asyncio
 async def test_pay_doctor_consult_success(client, monkeypatch):
-    """
-    Test successful doctor consultation payment initiation
-    and verify correct payload passed to PaymentService.
-    """
 
     from app.schemas.payment import PaymentResponseOut, PaymentStatus
     from datetime import datetime, timezone, timedelta
@@ -27,7 +23,6 @@ async def test_pay_doctor_consult_success(client, monkeypatch):
 
     mock_service = AsyncMock(return_value=mock_out)
 
-    # 🔥 CRITICAL FIX: PATCH THE ACTUAL IMPORT PATH USED IN ROUTER
     monkeypatch.setattr(
         "app.services.payment_service.PaymentService.process_payment",
         mock_service
@@ -43,15 +38,20 @@ async def test_pay_doctor_consult_success(client, monkeypatch):
 
     assert response.status_code == status.HTTP_200_OK
 
-    # Verify service was called
+    data = response.json()
+
+    assert data["success"] is True
+    assert data["reference"] == "DOC-REF-789"
+    assert data["status"] == "PENDING"
+
     mock_service.assert_called_once()
 
     _, kwargs = mock_service.call_args
 
-    # 🔥 FIXED: match real router signature (IMPORTANT)
+    # ✅ strict validation (same pattern as bike/blood)
     assert kwargs["user_phone"] == "670000000"
     assert kwargs["category"] == "doctor"
-    assert "user_id" in kwargs
+    assert kwargs["user_id"] == client.test_user.uid
 
 
 # =========================================================
@@ -59,13 +59,9 @@ async def test_pay_doctor_consult_success(client, monkeypatch):
 # =========================================================
 @pytest.mark.asyncio
 async def test_get_remaining_doctor_consults(client, monkeypatch):
-    """
-    Test remaining free doctor consults endpoint.
-    """
 
     mock_service = AsyncMock(return_value=5)
 
-    # 🔥 FIX: correct patch path used in router
     monkeypatch.setattr(
         "app.services.payment_service.PaymentService.get_remaining_free_uses",
         mock_service
@@ -76,5 +72,12 @@ async def test_get_remaining_doctor_consults(client, monkeypatch):
     assert response.status_code == status.HTTP_200_OK
 
     data = response.json()
-
     assert data["remaining"] == 5
+
+    mock_service.assert_called_once()
+
+    _, kwargs = mock_service.call_args
+
+    # ✅ strict validation
+    assert kwargs["category"] == "doctor"
+    assert kwargs["user_id"] == client.test_user.uid

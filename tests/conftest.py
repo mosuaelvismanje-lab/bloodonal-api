@@ -31,7 +31,7 @@ def override_get_current_user_factory(user: TestUser):
 
 
 # ======================================================
-# CLEAN FAKE DB (NO SQLA / NO ASYNC MOCK BUGS)
+# FAKE DB (NO SQLA DEPENDENCY)
 # ======================================================
 class FakeResult:
     def scalar_one_or_none(self):
@@ -57,29 +57,18 @@ async def override_get_db():
 
 
 # ======================================================
-# 🔥 CRITICAL FIX: REMOVE CUSTOM EVENT LOOP
-# pytest-asyncio handles this internally now
-# ======================================================
-# ❌ DO NOT define event_loop fixture anymore
-# This was causing:
-# AttributeError: FixtureDef has no attribute 'unittest'
-
-
-# ======================================================
-# TEST CLIENT (PER TEST USER, FULLY ISOLATED)
+# FIXED CLIENT FIXTURE (NO event_loop FIXTURE!)
 # ======================================================
 @pytest_asyncio.fixture
 async def client(user_factory, request):
     """
-    Supports per-test user override via:
-    @pytest.mark.parametrize("client", ["user_id"], indirect=True)
+    Per-test user injection via request.param
     """
 
-    # Default user if not overridden
     uid = getattr(request, "param", "test_user_default")
     test_user = user_factory(uid)
 
-    # Apply overrides
+    # override FastAPI dependencies
     app.dependency_overrides[get_current_user] = override_get_current_user_factory(test_user)
     app.dependency_overrides[get_db] = override_get_db
 
@@ -87,7 +76,9 @@ async def client(user_factory, request):
         transport=ASGITransport(app=app),
         base_url="http://test"
     ) as ac:
+        # attach user for assertions (IMPORTANT FIX)
+        ac.test_user = test_user
         yield ac
 
-    # Cleanup (VERY IMPORTANT)
+    # cleanup
     app.dependency_overrides.clear()

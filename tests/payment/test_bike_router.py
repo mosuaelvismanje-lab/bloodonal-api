@@ -64,13 +64,11 @@ async def test_pay_bike_success(client, monkeypatch):
 
     _, kwargs = mock_service.call_args
 
-    # ✅ correct assertions
     assert kwargs["user_phone"] == "677123456"
     assert kwargs["category"] == "bike"
 
-    # ✅ FIXED: do NOT access client.app
-    assert "user_id" in kwargs
-    assert kwargs["user_id"] is not None
+    # ✅ stable user assertion (from conftest fixture)
+    assert kwargs["user_id"] == client.test_user.uid
 
 
 # =========================================================
@@ -106,9 +104,7 @@ async def test_get_remaining_bike_rides(client, monkeypatch):
 
     _, kwargs = mock_service.call_args
 
-    # ✅ ensure correct category passed
     assert kwargs["category"] == "bike"
 
-    # ✅ FIXED: safe user check
-    assert "user_id" in kwargs
-    assert kwargs["user_id"] is not None
+    # ✅ stable user check
+    assert kwargs["user_id"] == client.test_user.uid
