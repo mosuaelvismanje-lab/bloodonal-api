@@ -1,5 +1,4 @@
 import pytest
-import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 
 from main import app
@@ -57,12 +56,13 @@ async def override_get_db():
 
 
 # ======================================================
-# FIXED CLIENT FIXTURE (NO event_loop FIXTURE!)
+# FIXED CLIENT FIXTURE (NO event_loop, NO pytest_asyncio.fixture)
 # ======================================================
-@pytest_asyncio.fixture
+@pytest.fixture
 async def client(user_factory, request):
     """
     Per-test user injection via request.param
+    Compatible with pytest 9 + pytest-asyncio 1.x
     """
 
     uid = getattr(request, "param", "test_user_default")
@@ -76,9 +76,11 @@ async def client(user_factory, request):
         transport=ASGITransport(app=app),
         base_url="http://test"
     ) as ac:
-        # attach user for assertions (IMPORTANT FIX)
+
+        # attach user for assertions (safe helper)
         ac.test_user = test_user
+
         yield ac
 
-    # cleanup
+    # cleanup (VERY IMPORTANT)
     app.dependency_overrides.clear()
