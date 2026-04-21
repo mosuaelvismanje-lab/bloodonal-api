@@ -15,13 +15,14 @@ logger = logging.getLogger(__name__)
 
 class SQLAlchemyUsageRepository(IUsageRepository):
     """
-    Quota Gatekeeper (safe async version)
+    Quota Gatekeeper (robust async version)
 
-    Fixes:
-    - Handles AsyncMock / coroutine return values safely
-    - Avoids scalar_one_or_none() crash when result is mocked badly
-    - Keeps service normalization via registry
-    - Keeps upsert + idempotency behavior
+    Improvements:
+    - Safe handling of AsyncMock / coroutine DB results
+    - Stable scalar extraction (no crashes in tests)
+    - Strong idempotency handling
+    - Clean logging (no noisy crashes)
+    - Consistent service normalization
     """
 
     def __init__(self, session: AsyncSession):
@@ -31,6 +32,7 @@ class SQLAlchemyUsageRepository(IUsageRepository):
     # INTERNAL HELPERS
     # ======================================================
     def _resolve_service(self, service: str) -> str:
+        """Normalize service using registry"""
         try:
             meta = registry.get_service_meta(service)
             return meta.get("quota_type", service)
@@ -40,14 +42,14 @@ class SQLAlchemyUsageRepository(IUsageRepository):
     async def _safe_scalar_one_or_none(self, result: Any) -> Any:
         """
         Safely extract scalar_one_or_none() from SQLAlchemy results,
-        while tolerating AsyncMock / coroutine-based test doubles.
+        supports AsyncMock, coroutine, or malformed test doubles.
         """
         if result is None:
             return None
 
         scalar_fn = getattr(result, "scalar_one_or_none", None)
         if scalar_fn is None:
-            logger.warning("Result object has no scalar_one_or_none()")
+            logger.warning("Result has no scalar_one_or_none()")
             return None
 
         try:
@@ -56,7 +58,7 @@ class SQLAlchemyUsageRepository(IUsageRepository):
                 value = await value
             return value
         except Exception as e:
-            logger.error(f"Failed to read scalar_one_or_none(): {e}")
+            logger.error(f"scalar_one_or_none() failed: {e}")
             return None
 
     # ======================================================
@@ -77,15 +79,12 @@ class SQLAlchemyUsageRepository(IUsageRepository):
             if value is None:
                 return 0
 
+            # Handle weird async mocks returning coroutine
             if inspect.isawaitable(value):
-                logger.warning("Awaitable detected in count_uses() value, returning 0")
+                logger.warning("Awaitable detected in count_uses → returning 0")
                 return 0
 
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                logger.error(f"Invalid usage value type: {type(value)}")
-                return 0
+            return int(value)
 
         except Exception as e:
             logger.error(f"Error counting uses {user_id}/{quota_type}: {e}")
@@ -108,10 +107,11 @@ class SQLAlchemyUsageRepository(IUsageRepository):
         quota_type = self._resolve_service(service)
 
         try:
+            # ✅ IDEMPOTENCY GUARD
             if idempotency_key:
                 existing = await self.get_by_idempotency_key(idempotency_key)
                 if existing:
-                    logger.info(f"♻️ Duplicate ignored: {idempotency_key}")
+                    logger.info(f"♻️ Duplicate usage ignored: {idempotency_key}")
                     return
 
             stmt = insert(UsageCounter).values(
@@ -132,6 +132,7 @@ class SQLAlchemyUsageRepository(IUsageRepository):
             )
 
             await self.session.execute(upsert_stmt)
+
             logger.info(f"📈 Usage recorded: {user_id} ({quota_type})")
 
         except Exception as e:
@@ -163,11 +164,11 @@ class SQLAlchemyUsageRepository(IUsageRepository):
             }
 
         except Exception as e:
-            logger.error(f"Error in idempotency lookup: {e}")
+            logger.error(f"Idempotency lookup failed: {e}")
             return None
 
     # ======================================================
-    # FREE USAGE
+    # FREE USAGE CONSUMPTION
     # ======================================================
     async def try_consume_free_usage(
         self,
@@ -199,6 +200,7 @@ class SQLAlchemyUsageRepository(IUsageRepository):
                 )
 
                 await self.session.execute(upsert_stmt)
+
                 logger.info(f"✅ Free usage consumed: {user_id} ({quota_type})")
                 return True
 
@@ -206,5 +208,5 @@ class SQLAlchemyUsageRepository(IUsageRepository):
             return False
 
         except Exception as e:
-            logger.error(f"💥 Failed to consume usage: {e}")
+            logger.error(f"💥 Failed to consume free usage: {e}")
             raise RuntimeError(str(e))

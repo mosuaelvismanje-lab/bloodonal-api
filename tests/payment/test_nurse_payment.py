@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 # Test Cases
 # -------------------------
 @pytest.mark.asyncio
+@pytest.mark.parametrize("client", ["nurse_test_user_789"], indirect=True)
 async def test_pay_nurse_success(client, monkeypatch):
     """
     Test successful nurse service payment with engine argument verification.
@@ -48,9 +49,9 @@ async def test_pay_nurse_success(client, monkeypatch):
 
     _, kwargs = mock_service.call_args
 
-    # ✅ FIXED: do NOT hardcode strict user_id
+    # ✅ VALID ASSERTIONS
     assert kwargs["user_phone"] == "670000000"
     assert kwargs["category"] == "nurse-services"
 
-    # Optional safety check (recommended)
-    assert "user_id" in kwargs
+    # ✅ CORRECT USER ASSERTION (comes from parametrize)
+    assert kwargs["user_id"] == "nurse_test_user_789"

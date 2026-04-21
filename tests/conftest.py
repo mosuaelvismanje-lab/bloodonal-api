@@ -1,6 +1,5 @@
 import pytest
 import pytest_asyncio
-import asyncio
 from httpx import AsyncClient, ASGITransport
 
 from main import app
@@ -23,7 +22,7 @@ def user_factory():
 
 
 # ======================================================
-# FIXED CURRENT USER OVERRIDE
+# CURRENT USER OVERRIDE FACTORY
 # ======================================================
 def override_get_current_user_factory(user: TestUser):
     async def _override():
@@ -58,37 +57,37 @@ async def override_get_db():
 
 
 # ======================================================
-# EVENT LOOP FIX
+# 🔥 CRITICAL FIX: REMOVE CUSTOM EVENT LOOP
+# pytest-asyncio handles this internally now
 # ======================================================
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+# ❌ DO NOT define event_loop fixture anymore
+# This was causing:
+# AttributeError: FixtureDef has no attribute 'unittest'
 
 
 # ======================================================
-# TEST CLIENT FIX (PER TEST USER)
+# TEST CLIENT (PER TEST USER, FULLY ISOLATED)
 # ======================================================
-@pytest_asyncio.fixture(scope="function")
+@pytest_asyncio.fixture
 async def client(user_factory, request):
     """
-    request.param allows per-test user override
+    Supports per-test user override via:
+    @pytest.mark.parametrize("client", ["user_id"], indirect=True)
     """
 
-    # default users per test
-    uid = getattr(request, "param", "nurse_test_user_789")
+    # Default user if not overridden
+    uid = getattr(request, "param", "test_user_default")
     test_user = user_factory(uid)
 
+    # Apply overrides
     app.dependency_overrides[get_current_user] = override_get_current_user_factory(test_user)
     app.dependency_overrides[get_db] = override_get_db
 
-    transport = ASGITransport(app=app)
-
     async with AsyncClient(
-        transport=transport,
+        transport=ASGITransport(app=app),
         base_url="http://test"
     ) as ac:
         yield ac
 
+    # Cleanup (VERY IMPORTANT)
     app.dependency_overrides.clear()

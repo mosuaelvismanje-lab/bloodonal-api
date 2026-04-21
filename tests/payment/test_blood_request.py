@@ -8,6 +8,7 @@ from app.models.payment import PaymentStatus
 # FREE FLOW TEST
 # =========================================================
 @pytest.mark.asyncio
+@pytest.mark.parametrize("client", ["blood_user_free_001"], indirect=True)
 async def test_pay_blood_request_success(client, monkeypatch):
     """Test FREE PATH with service argument validation."""
 
@@ -48,15 +49,19 @@ async def test_pay_blood_request_success(client, monkeypatch):
 
     _, kwargs = mock_service.call_args
 
-    # ✅ FIX: DO NOT hardcode user_id (causes cross-test pollution)
+    # ✅ SAFE ASSERTIONS
     assert kwargs["user_phone"] == "670556321"
     assert kwargs["category"] == "blood-request"
+
+    # ✅ CORRECT USER ASSERTION
+    assert kwargs["user_id"] == "blood_user_free_001"
 
 
 # =========================================================
 # PAID FLOW TEST
 # =========================================================
 @pytest.mark.asyncio
+@pytest.mark.parametrize("client", ["blood_user_paid_002"], indirect=True)
 async def test_pay_blood_request_paid_path(client, monkeypatch):
     """Test PAID flow (USSD generation)."""
 
@@ -92,11 +97,19 @@ async def test_pay_blood_request_paid_path(client, monkeypatch):
 
     assert mock_service.call_count == 1
 
+    _, kwargs = mock_service.call_args
+
+    # ✅ VALIDATE INPUT FLOW
+    assert kwargs["user_phone"] == "677000000"
+    assert kwargs["category"] == "blood-request"
+    assert kwargs["user_id"] == "blood_user_paid_002"
+
 
 # =========================================================
 # REMAINING FREE USAGE TEST
 # =========================================================
 @pytest.mark.asyncio
+@pytest.mark.parametrize("client", ["blood_user_quota_003"], indirect=True)
 async def test_get_remaining_blood_requests(client, monkeypatch):
     """Test quota checking endpoint."""
 
@@ -119,3 +132,9 @@ async def test_get_remaining_blood_requests(client, monkeypatch):
     assert data["remaining"] == 3
 
     assert mock_service.call_count == 1
+
+    _, kwargs = mock_service.call_args
+
+    # ✅ OPTIONAL BUT STRONG CHECK
+    assert kwargs["user_id"] == "blood_user_quota_003"
+    assert kwargs["category"] == "blood-request"
