@@ -23,9 +23,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
-          # FIX: Pin pytest-asyncio to 0.23.8 to resolve FixtureDef AttributeError
           pip install --upgrade pytest-asyncio
-          
 
       - name: Run tests with pytest
         env:
@@ -37,7 +35,7 @@ jobs:
           DATABASE_URL: postgresql://ci_test_user:ci_test_pass@127.0.0.1:5432/ci_test_db
           ASYNC_DATABASE_URL: postgresql+asyncpg://ci_test_user:ci_test_pass@127.0.0.1:5432/ci_test_db
           ENVIRONMENT: test
-          # FIX: Explicitly set asyncio mode for stability
-          PYTEST_ADDOPTS: "--asyncio-mode=auto --asyncio-default-fixture-loop-scope=function"
+          # ✅ FIXED: only valid option
+          PYTEST_ADDOPTS: "--asyncio-mode=auto"
         run: |
           python -m pytest -k "not firebase and not db" --disable-warnings
