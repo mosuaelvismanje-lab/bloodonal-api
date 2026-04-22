@@ -24,7 +24,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
           # FIX: Pin pytest-asyncio to 0.23.8 to resolve FixtureDef AttributeError
-          pip install pytest-asyncio==0.23.8
+          pip install --upgrade pytest-asyncio
+          
 
       - name: Run tests with pytest
         env:
