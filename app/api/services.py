@@ -1,19 +1,14 @@
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import update, select
 
-# ✅ Standard Dependencies
-from app.database import get_db
-from app.core.redis import get_redis_client
-
-# ✅ Service & Model Logic
-from app.services.registry import registry
+from app.api.dependencies import get_db, get_redis
 from app.models.service_listing import ServiceListing
+from app.services.registry import registry
 
 logger = logging.getLogger(__name__)
 
@@ -25,56 +20,64 @@ router = APIRouter(
 
 @router.post("/accept/{request_id}")
 async def accept_service(
-        request_id: uuid.UUID,  # ✅ Changed to UUID for DB compatibility
-        provider_id: uuid.UUID, # ✅ Changed to UUID for type-safety
-        db: AsyncSession = Depends(get_db),
-        redis=Depends(get_redis_client)
+    request_id: uuid.UUID,
+    provider_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    redis=Depends(get_redis),
 ):
     """
-    Atomically assigns a service request to a provider using distributed locking.
+    Atomically assigns a service request to a provider using a distributed lock.
     """
 
-    # 1️⃣ Pre-Check: Fetch the listing
+    # 1) Fetch listing
     listing = await db.get(ServiceListing, request_id)
     if not listing or not listing.is_published:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Service request not found or not yet published."
+            detail="Service request not found or not yet published.",
         )
 
-    # 2️⃣ Registry Validation
+    # 2) Registry validation
     try:
         service_meta = registry.get_service_meta(listing.service_type)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
 
-    # 3️⃣ Distributed Locking (Redis)
-    # Prevents multiple providers from triggering the DB update simultaneously
+    # 3) Acquire distributed lock
     lock_key = f"lock:request:{request_id}"
     lock_token = f"{provider_id}:{uuid.uuid4().hex[:6]}"
 
-    # NX=True ensures only one client can set this key; EX=10 sets a 10s timeout
-    is_locked = await redis.set(lock_key, lock_token, nx=True, ex=10)
+    try:
+        is_locked = await redis.set(lock_key, lock_token, nx=True, ex=10)
+    except Exception as e:
+        logger.error("❌ Redis lock failed: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not process request at the moment.",
+        )
 
     if not is_locked:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Someone else is already accepting this request."
+            detail="Another provider is already accepting this request.",
         )
 
     try:
-        # 4️⃣ Atomic Database Update
-        # We check provider_id == None inside the 'where' clause as a secondary guard
+        # 4) Atomic DB update
         stmt = (
             update(ServiceListing)
             .where(
                 ServiceListing.id == request_id,
-                ServiceListing.provider_id == None
+                ServiceListing.status == "PENDING",
+                ServiceListing.provider_id.is_(None),
             )
             .values(
                 provider_id=provider_id,
                 status="ASSIGNED",
-                accepted_at=datetime.now(timezone.utc) # ✅ Works now with import
+                accepted_at=datetime.now(timezone.utc),
             )
             .returning(ServiceListing.id)
         )
@@ -85,7 +88,7 @@ async def accept_service(
         if not updated_id:
             raise HTTPException(
                 status_code=status.HTTP_410_GONE,
-                detail="Too late! Request already assigned."
+                detail="Too late! Request already assigned.",
             )
 
         await db.commit()
@@ -93,23 +96,36 @@ async def accept_service(
         return {
             "status": "success",
             "service": service_meta.get("display_name", listing.service_type),
-            "message": f"You have successfully accepted the request."
+            "message": "You have successfully accepted the request.",
         }
 
     except HTTPException:
-        raise  # Re-raise FastAPI exceptions (410, etc.)
+        raise
+
     except Exception as e:
         await db.rollback()
-        logger.error(f"Error accepting service {request_id}: {e}", exc_info=True)
+        logger.error(
+            "❌ Error accepting service %s: %s",
+            request_id,
+            e,
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to assign request due to a server error."
+            detail="Failed to assign request due to a server error.",
         )
 
     finally:
-        # 5️⃣ Safe Lock Release
-        # Only delete the lock if we are the ones who set it
-        current_token = await redis.get(lock_key)
-        # Redis returns bytes, so we decode or compare carefully
-        if current_token and (current_token.decode() if isinstance(current_token, bytes) else current_token) == lock_token:
-            await redis.delete(lock_key)
+        # 5) Safe lock release
+        try:
+            current_token = await redis.get(lock_key)
+
+            if current_token is not None:
+                if isinstance(current_token, bytes):
+                    current_token = current_token.decode()
+
+                if current_token == lock_token:
+                    await redis.delete(lock_key)
+
+        except Exception as e:
+            logger.warning("⚠️ Failed to release Redis lock: %s", e)

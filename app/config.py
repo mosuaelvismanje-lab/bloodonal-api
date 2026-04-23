@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-import os
-import logging
 from pathlib import Path
-from typing import List, Optional, Union, Annotated, Dict
-from urllib.parse import quote_plus, urlparse, urlunparse, parse_qs, urlencode
 from tempfile import NamedTemporaryFile
+from typing import Annotated, Dict, List, Optional, Union
+from urllib.parse import quote_plus, urlencode, urlparse, urlunparse, parse_qs
 
-from pydantic import field_validator, Field
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
 
-
-# -------------------------
-# 2026 Production Settings
-# -------------------------
 
 class Settings(BaseSettings):
     """
@@ -25,7 +19,7 @@ class Settings(BaseSettings):
     # -------------------------
     # General / Runtime
     # -------------------------
-    ENVIRONMENT: str = "development"  # development | staging | production
+    ENVIRONMENT: str = "development"
     DEBUG: bool = False
     SECRET_KEY: str = "please-change-me-at-all-costs-2026"
 
@@ -51,18 +45,17 @@ class Settings(BaseSettings):
     DB_PORT: int = 5432
     DB_NAME: Optional[str] = None
 
-    # Anticipating an increase past 291 connections:
-    DB_POOL_SIZE: int = 100  # Per-instance pool size
-    DB_MAX_OVERFLOW: int = 50  # Allows bursts when scaling up
+    DB_POOL_SIZE: int = 100
+    DB_MAX_OVERFLOW: int = 50
 
     # -------------------------
     # Redis & Background Tasks
     # -------------------------
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: Optional[str] = None
 
     # Worker Settings
-    WORKER_CLEANUP_INTERVAL_SECONDS: int = 300  # 5 minutes
-    DAILY_REPORT_HOUR_UTC: int = 23  # Run at 11 PM UTC
+    WORKER_CLEANUP_INTERVAL_SECONDS: int = 300
+    DAILY_REPORT_HOUR_UTC: int = 23
 
     # -------------------------
     # Firebase / Google Credentials
@@ -80,24 +73,21 @@ class Settings(BaseSettings):
     # -------------------------
     # Payment Providers & Merchant Accounts
     # -------------------------
-    PAYMENT_GATEWAY: str = "mock"  # mock | mtn | orange | stripe
+    PAYMENT_GATEWAY: str = "mock"
 
-    # Merchant Phone Numbers (Cameroon specific)
     ADMIN_MTN_NUMBER: str = "670556320"
     ADMIN_ORANGE_NUMBER: str = "690000000"
 
-    # API Keys
     STRIPE_API_KEY: Optional[str] = None
     FLUTTERWAVE_SECRET: Optional[str] = None
     MTN_MOMO_API_KEY: Optional[str] = None
     MTN_MOMO_SUBSCRIPTION_KEY: Optional[str] = None
     MTN_MOMO_ENVIRONMENT: str = "sandbox"
 
-    # ✅ ADD THIS
     GATEWAY_TIMEOUT: float = 30.0
 
     # -------------------------
-    # ✅ CALLS & VIDEO (Jitsi Integration)
+    # Calls & Video
     # -------------------------
     JITSI_SERVER_URL: str = "https://meet.jit.si"
     CALL_SESSION_TIMEOUT_MINUTES: int = 60
@@ -108,7 +98,7 @@ class Settings(BaseSettings):
     # -------------------------
     ENABLE_MONITORING: bool = True
     PROMETHEUS_METRICS_ENABLED: bool = True
-    STATS_CACHE_TTL: int = 300  # 5 minutes cache for Dashboard metrics
+    STATS_CACHE_TTL: int = 300
 
     # -------------------------
     # Usage Limits (Quotas)
@@ -155,18 +145,20 @@ class Settings(BaseSettings):
     # -------------------------
     # Helper Properties
     # -------------------------
-
     def _add_ssl_mode(self, url: str) -> str:
         """Append sslmode=require if missing for cloud DBs like Render/Neon."""
         try:
             parsed = urlparse(url)
         except ValueError:
             return url
+
         if not parsed.hostname:
             return url
+
         query_params = parse_qs(parsed.query)
         if "sslmode" not in query_params:
             query_params["sslmode"] = ["require"]
+
         return urlunparse(parsed._replace(query=urlencode(query_params, doseq=True)))
 
     @property
@@ -184,8 +176,11 @@ class Settings(BaseSettings):
                 url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
             return self._add_ssl_mode(url)
 
-        user, pw, host, port, name = quote_plus(self.DB_USER or ""), quote_plus(
-            self.DB_PASS or ""), self.DB_HOST or "", self.DB_PORT, self.DB_NAME or ""
+        user = quote_plus(self.DB_USER or "")
+        pw = quote_plus(self.DB_PASS or "")
+        host = self.DB_HOST or ""
+        port = self.DB_PORT
+        name = self.DB_NAME or ""
         return self._add_ssl_mode(f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{name}")
 
     @property
@@ -197,8 +192,11 @@ class Settings(BaseSettings):
                 url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
             return self._add_ssl_mode(url)
 
-        user, pw, host, port, name = quote_plus(self.DB_USER or ""), quote_plus(
-            self.DB_PASS or ""), self.DB_HOST or "", self.DB_PORT, self.DB_NAME or ""
+        user = quote_plus(self.DB_USER or "")
+        pw = quote_plus(self.DB_PASS or "")
+        host = self.DB_HOST or ""
+        port = self.DB_PORT
+        name = self.DB_NAME or ""
         return self._add_ssl_mode(f"postgresql+asyncpg://{user}:{pw}@{host}:{port}/{name}")
 
     @property
@@ -209,14 +207,19 @@ class Settings(BaseSettings):
             tmp_file.write(self.FIREBASE_CREDENTIALS_JSON.encode("utf-8"))
             tmp_file.close()
             return Path(tmp_file.name)
+
         path_str = self.FIREBASE_CREDENTIALS_PATH or self.GOOGLE_APPLICATION_CREDENTIALS
         p = Path(path_str) if path_str else None
         return p if p and p.is_file() else None
 
+    @property
+    def effective_redis_url(self) -> Optional[str]:
+        """Normalized Redis URL for startup logic."""
+        return self.REDIS_URL.strip() if self.REDIS_URL else None
+
     # -------------------------
     # Registry Mappings
     # -------------------------
-
     @property
     def free_limits(self) -> Dict[str, int]:
         return {
@@ -239,10 +242,9 @@ class Settings(BaseSettings):
 
     @property
     def admin_wallets(self) -> Dict[str, str]:
-        """Grouped merchant wallets for the Monitoring dashboard."""
         return {
             "MTN": self.ADMIN_MTN_NUMBER,
-            "ORANGE": self.ADMIN_ORANGE_NUMBER
+            "ORANGE": self.ADMIN_ORANGE_NUMBER,
         }
 
     @property
@@ -267,11 +269,10 @@ class Settings(BaseSettings):
 
     @property
     def call_config(self) -> Dict[str, Union[str, int]]:
-        """Consolidated config for the CallManager service."""
         return {
             "server_url": self.JITSI_SERVER_URL,
             "timeout_minutes": self.CALL_SESSION_TIMEOUT_MINUTES,
-            "signaling_ttl": self.CALL_SIGNALING_TTL_SECONDS
+            "signaling_ttl": self.CALL_SIGNALING_TTL_SECONDS,
         }
 
     @field_validator("ALLOWED_ORIGINS", mode="before")
@@ -289,5 +290,4 @@ class Settings(BaseSettings):
     )
 
 
-# Instantiate
 settings = Settings()

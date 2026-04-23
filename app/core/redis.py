@@ -1,19 +1,26 @@
-import redis.asyncio as redis
-from app.config import settings
+import logging
+from fastapi import Request, HTTPException, status
 
-# Global pool to reuse connections
-_redis_pool = None
+logger = logging.getLogger(__name__)
 
-def get_redis_client():
+
+async def get_redis_client(request: Request):
     """
-    Returns a Redis client instance.
-    In FastAPI, this is often used as a dependency.
+    2026 Standard Redis Dependency
+
+    - Redis is initialized in FastAPI lifespan
+    - Stored in app.state.redis
+    - Always required (no Optional, no fallback)
     """
-    global _redis_pool
-    if _redis_pool is None:
-        _redis_pool = redis.from_url(
-            settings.REDIS_URL,
-            encoding="utf-8",
-            decode_responses=True
+
+    redis = getattr(request.app.state, "redis", None)
+
+    if redis is None:
+        logger.error("❌ Redis not initialized in app.state")
+
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Redis service not available",
         )
-    return _redis_pool
+
+    return redis

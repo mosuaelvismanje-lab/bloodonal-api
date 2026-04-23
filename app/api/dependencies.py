@@ -1,8 +1,8 @@
 import logging
 import uuid
-from typing import Dict, Any, AsyncGenerator, Optional, Callable
+from typing import Dict, Any, AsyncGenerator, Callable
 
-from fastapi import Header, HTTPException, status, Depends, Security
+from fastapi import Header, HTTPException, status, Depends, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,36 +11,28 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# ✅ MOCK SECURITY: auto_error=False allows testing in Swagger without real JWT
+# ✅ MOCK SECURITY: allows Swagger testing without JWT
 security = HTTPBearer(scheme_name="HTTPBearer", auto_error=False)
 
 
 # ---------------------------------------------------------
-# 1. Hardened Mock User Model (UUID Aware)
+# 1. Hardened Mock User Model (UUID Safe)
 # ---------------------------------------------------------
 class MockUser:
-    """
-    Standardized User bridge for 2026.
-    Ensures self.uid is a real UUID object to prevent DB filter errors.
-    """
-
     def __init__(self, uid: uuid.UUID, email: str, name: str, role: str = "user"):
-        self.id = uid  # Primary key as UUID
+        self.id = uid
         self.uid = uid
         self.email = email
         self.name = name
         self.role = role
         self.is_active = True
-        # In DEBUG mode, we treat the emulator user as an admin by default
         self.is_admin = (role == "admin" or settings.DEBUG)
 
 
 # ---------------------------------------------------------
 # 2. Admin & Feature Gating
 # ---------------------------------------------------------
-
 async def verify_admin_token(x_admin_token: str = Header(None, alias="X-Admin-Token")):
-    """Validates super-admin access via secret header."""
     if not x_admin_token and not settings.DEBUG:
         raise HTTPException(status_code=403, detail="Admin credentials required")
 
@@ -51,15 +43,13 @@ async def verify_admin_token(x_admin_token: str = Header(None, alias="X-Admin-To
 
 
 def require_service_enabled(service_key: str) -> Callable:
-    """✅ 2026 Feature Toggle: Dependency Factory to gate routes."""
-
     async def _check():
         is_enabled = settings.payment_switches.get(service_key, True)
         if not is_enabled:
             logger.warning(f"🚫 Maintenance mode for: {service_key}")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"The {service_key.replace('_', ' ')} service is currently offline."
+                detail=f"The {service_key.replace('_', ' ')} service is offline."
             )
         return True
 
@@ -67,59 +57,52 @@ def require_service_enabled(service_key: str) -> Callable:
 
 
 # ---------------------------------------------------------
-# 3. Auth & Identity (Firebase Emulator Standards)
+# 3. Auth (Mock / Firebase-ready)
 # ---------------------------------------------------------
-
 async def get_current_decoded_token(
-        credentials: HTTPAuthorizationCredentials = Security(security)
+    credentials: HTTPAuthorizationCredentials = Security(security)
 ) -> Dict[str, Any]:
-    """Identity Resolver: Bypasses Firebase Auth in Debug mode."""
 
-    # Static UUID for testing to keep sessions consistent in dev
     mock_uuid = "550e8400-e29b-41d4-a716-446655440000"
 
     return {
         "uid": mock_uuid,
         "email": "tester@example.com",
         "name": "Emulator Tester",
-        "role": "admin",  # Default to admin in dev
+        "role": "admin",
     }
 
 
 async def get_current_user(
-        decoded_token: Dict[str, Any] = Depends(get_current_decoded_token),
+    decoded_token: Dict[str, Any] = Depends(get_current_decoded_token),
 ) -> MockUser:
-    """
-    Serves a MockUser with a validated UUID.
-    Passes this to Repositories for type-safe filtering.
-    """
+
     return MockUser(
-        uid=uuid.UUID(decoded_token["uid"]),  # ✅ Convert string to real UUID
+        uid=uuid.UUID(decoded_token["uid"]),
         email=decoded_token.get("email", "unknown@test.com"),
         name=decoded_token.get("name", "Test User"),
-        role=decoded_token.get("role", "user")
+        role=decoded_token.get("role", "user"),
     )
 
 
 async def get_admin_user(
-        current_user: MockUser = Depends(get_current_user)
+    current_user: MockUser = Depends(get_current_user)
 ) -> MockUser:
-    """Authorization Gating: Validates admin status."""
+
     if not current_user.is_admin:
         logger.warning(f"🚫 Unauthorized admin attempt: {current_user.uid}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Administrative privileges required."
+            detail="Administrative privileges required.",
         )
+
     return current_user
 
 
 # ---------------------------------------------------------
-# 4. Database & Aliases
+# 4. Database
 # ---------------------------------------------------------
-
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Provides a managed AsyncSession."""
     async for session in get_async_session():
         try:
             yield session
@@ -128,6 +111,35 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
-# ✅ Compatibility Aliases for 2026 Core
+# ---------------------------------------------------------
+# 5. Redis Dependency (FINAL - SINGLE SOURCE)
+# ---------------------------------------------------------
+async def get_redis(request: Request):
+    """
+    2026 Redis Standard
+
+    - Redis is created in FastAPI lifespan
+    - Stored in app.state.redis
+    - This is the ONLY access point
+
+    No fallback, no secondary clients.
+    """
+
+    redis = getattr(request.app.state, "redis", None)
+
+    if redis is None:
+        logger.error("❌ Redis not initialized in app.state")
+
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Redis service not available",
+        )
+
+    return redis
+
+
+# ---------------------------------------------------------
+# 6. Compatibility Aliases
+# ---------------------------------------------------------
 get_db_session = get_db
 get_current_user_id = lambda u=Depends(get_current_user): u.uid

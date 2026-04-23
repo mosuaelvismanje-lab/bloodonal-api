@@ -40,6 +40,7 @@ log = logging.getLogger("bloodonal")
 # -------------------------
 _FIREBASE_TEMP_CRED_FILES: List[str] = []
 
+
 def _cleanup_firebase_temp_files():
     """Purge temporary credential files on exit."""
     for path in list(_FIREBASE_TEMP_CRED_FILES):
@@ -51,6 +52,7 @@ def _cleanup_firebase_temp_files():
             log.warning("⚠️ Cleanup failed: %s", e)
     _FIREBASE_TEMP_CRED_FILES.clear()
 
+
 atexit.register(_cleanup_firebase_temp_files)
 
 # -------------------------
@@ -60,45 +62,75 @@ atexit.register(_cleanup_firebase_temp_files)
 async def lifespan(app: FastAPI):
     log.info("🚀 STARTING BLOODONAL PLATFORM (2026)")
 
-    # DB
-    await init_db()
-    log.info("✅ Database ready")
+    # Keep optional services safe by default
+    app.state.redis = None
+    app.state.background_worker = None
 
-    # Redis
-    if settings.REDIS_URL:
-        app.state.redis = redis.from_url(
-            settings.REDIS_URL,
-            decode_responses=True,
-            health_check_interval=30,
-        )
-        await app.state.redis.ping()
-        log.info("✅ Redis connected")
+    # DB
+    try:
+        await init_db()
+        log.info("✅ Database ready")
+    except Exception as e:
+        log.error("❌ Database init failed: %s", e, exc_info=True)
+
+    # Redis (optional but preferred)
+    redis_url = settings.REDIS_URL or os.getenv("REDIS_URL")
+    if redis_url:
+        try:
+            app.state.redis = redis.from_url(
+                redis_url,
+                decode_responses=True,
+                health_check_interval=30,
+            )
+            await app.state.redis.ping()
+            log.info("✅ Redis connected")
+        except Exception as e:
+            log.warning("⚠️ Redis unavailable, continuing without Redis: %s", e)
+            app.state.redis = None
+    else:
+        log.warning("⚠️ No REDIS_URL provided, skipping Redis")
+        app.state.redis = None
 
     # Background worker
-    app.state.background_worker = asyncio.create_task(run_payment_worker_loop())
-    log.info("🚀 Payment worker started")
+    try:
+        app.state.background_worker = asyncio.create_task(run_payment_worker_loop())
+        log.info("🚀 Payment worker started")
+    except Exception as e:
+        log.warning("⚠️ Payment worker failed to start: %s", e, exc_info=True)
+        app.state.background_worker = None
 
     # Firebase
-    _init_firebase()
-    log.info("🔥 Firebase ready")
+    try:
+        _init_firebase()
+        log.info("🔥 Firebase ready")
+    except Exception as e:
+        log.warning("⚠️ Firebase init failed: %s", e, exc_info=True)
 
     yield
 
     log.info("🛑 SHUTDOWN STARTING")
 
-    if hasattr(app.state, "background_worker"):
+    if getattr(app.state, "background_worker", None) is not None:
         app.state.background_worker.cancel()
         try:
             await app.state.background_worker
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            log.warning("⚠️ Background worker shutdown issue: %s", e)
 
-    if hasattr(app.state, "redis"):
-        await app.state.redis.aclose()
+    if getattr(app.state, "redis", None) is not None:
+        try:
+            await app.state.redis.aclose()
+        except Exception as e:
+            log.warning("⚠️ Redis close failed: %s", e)
 
-    await engine.dispose()
+    try:
+        await engine.dispose()
+    except Exception as e:
+        log.warning("⚠️ Engine dispose failed: %s", e)
+
     _cleanup_firebase_temp_files()
-
     log.info("🛑 CLEAN SHUTDOWN COMPLETE")
 
 
@@ -143,7 +175,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 # -------------------------
-# ROUTERS IMPORTS (IMPORTANT FIX)
+# ROUTERS IMPORTS
 # -------------------------
 from app.routers import (
     blood_donor,
@@ -161,8 +193,6 @@ from app.routers import (
     taxi_payment,
     webhook_payment,
     servicerouter,
-
-    # 🔥 FIX: ADD THIS MISSING ROUTER (THIS FIXES YOUR 404)
     blood_request_payments,
 )
 
@@ -176,7 +206,7 @@ v1 = APIRouter(prefix=f"/{settings.API_VERSION}")
 router_modules = [
     blood_donor,
     blood_request,
-    blood_request_payments,  # 🔥 CRITICAL FIX FOR TESTS
+    blood_request_payments,
     health_provider,
     health_request,
     transport_offer,
@@ -203,6 +233,7 @@ v1.include_router(monitoring.router, prefix="/monitoring")
 # Calls system
 calls = APIRouter(prefix="/calls", tags=["calls"])
 
+
 @calls.post("/session")
 async def call_session(payload: dict):
     return {
@@ -210,6 +241,7 @@ async def call_session(payload: dict):
         "room": f"bloodonal_{uuid.uuid4().hex[:8]}",
         "jitsi_server": settings.JITSI_SERVER_URL,
     }
+
 
 v1.include_router(calls)
 
@@ -219,17 +251,19 @@ app.include_router(v1)
 # -------------------------
 # HEALTH CHECK
 # -------------------------
-@app.get("/")
+@app.get("/", tags=["health"])
 async def root():
     return {
         "status": "online",
         "version": settings.API_VERSION
     }
 
-@app.get("/db-test")
+
+@app.get("/db-test", tags=["health"])
 async def db_test(db=Depends(get_db)):
     await db.execute(text("SELECT 1"))
     return {"db": "ok"}
+
 
 # -------------------------
 # RUN
