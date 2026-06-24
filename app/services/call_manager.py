@@ -2,15 +2,14 @@ import uuid
 import logging
 import jwt
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.api.endpoints.monitoring import record_call_event
 from app.config import settings
-from app.models.call_session import CallSession, CallStatus, CallMode
-from app.schemas.call import CallInitiatePayload
+from app.models.call_session import CallSession, CallStatus
+from app.schemas.communication.call import CallInitiatePayload
 
 
 logger = logging.getLogger("bloodonal.call_manager")

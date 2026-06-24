@@ -1,66 +1,89 @@
 # app/services/reconciliation_service.py
 
-import asyncio
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from app.models.payment import Payment
-from app.schemas.payment import PaymentResponse
 import logging
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
+from app.domain.interfaces import IPaymentGateway
+from app.modules.payment.models import Payment, PaymentStatus
 
 logger = logging.getLogger(__name__)
 
 
 class ReconciliationService:
     """
-    Periodically reconciles internal payments ledger with external provider.
+    Background reconciliation worker.
+
+    Responsibility:
+    - Sync internal DB with external payment provider
+    - Fix stuck / pending payments
+    - Ensure eventual consistency
     """
 
-    @staticmethod
-    async def reconcile_payments(db: AsyncSession):
-        """
-        Check all pending payments and update status from the provider.
-        """
-        # Fetch all pending payments
-        query = select(Payment).where(Payment.status == "pending")
-        result = await db.execute(query)
+    def __init__(self, payment_gateway: IPaymentGateway):
+        self.payment_gateway = payment_gateway
+
+    # ======================================================
+    # MAIN RECONCILIATION JOB
+    # ======================================================
+    async def reconcile_payments(self, db: AsyncSession):
+        stmt = select(Payment).where(
+            Payment.status == PaymentStatus.PENDING
+        )
+
+        result = await db.execute(stmt)
         pending_payments = result.scalars().all()
 
         if not pending_payments:
-            logger.info("No pending payments to reconcile.")
+            logger.info("No pending payments found")
             return
 
-        for record in pending_payments:
+        updated_count = 0
+
+        for payment in pending_payments:
             try:
-                provider_status = await ReconciliationService.query_provider(record.provider_tx_id)
-                if provider_status != record.status:
+                provider_status = await self.payment_gateway.verify(
+                    payment.provider_tx_id
+                )
+
+                # Normalize provider response
+                new_status = self._map_status(provider_status)
+
+                if new_status != payment.status:
+                    payment.status = new_status
+                    db.add(payment)
+                    updated_count += 1
+
                     logger.info(
-                        "Updating payment %s status from %s to %s",
-                        record.internal_tx_id,
-                        record.status,
-                        provider_status
+                        "Reconciled payment %s → %s",
+                        payment.id,
+                        new_status
                     )
-                    record.status = provider_status
-                    db.add(record)
+
             except Exception as e:
                 logger.error(
-                    "Failed to reconcile payment %s: %s",
-                    record.internal_tx_id,
+                    "Reconciliation failed for %s: %s",
+                    payment.id,
                     str(e)
                 )
 
         await db.commit()
-        logger.info("Reconciliation completed for %d payment(s).", len(pending_payments))
 
-    @staticmethod
-    async def query_provider(provider_tx_id: str) -> str:
-        """
-        Placeholder for real provider API call.
-        Simulates checking the provider ledger for the status of a transaction.
+        logger.info(
+            "Reconciliation complete: %d updated",
+            updated_count
+        )
 
-        Returns:
-            str: status, e.g., "success", "failed", or "pending"
-        """
-        await asyncio.sleep(0.1)  # simulate API delay
-        # Here you could call an actual provider API
-        return "success"
+    # ======================================================
+    # STATUS MAPPER
+    # ======================================================
+    def _map_status(self, provider_status: str) -> PaymentStatus:
+        mapping = {
+            "success": PaymentStatus.SUCCESS,
+            "completed": PaymentStatus.SUCCESS,
+            "failed": PaymentStatus.FAILED,
+            "pending": PaymentStatus.PENDING,
+        }
 
+        return mapping.get(provider_status.lower(), PaymentStatus.PENDING)

@@ -59,7 +59,7 @@ class DetailedPaymentReport(BaseModel):
     reference: str
     amount: float
     status: PaymentStatus
-    # ✅ Mapped from ServiceRegistry in admin.py logic
+
     service_display_name: str = Field(..., description="Human readable name from Registry")
     user_id: str
     user_phone: Optional[str] = None

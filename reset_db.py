@@ -1,61 +1,152 @@
+# =========================================================
+# RESET DATABASE (ENTERPRISE SAFE VERSION)
+# =========================================================
+
 import logging
 import sys
 import os
+import traceback
+import pkgutil
+import importlib
 
-# Add the current directory to sys.path so we can import 'app'
 sys.path.append(os.getcwd())
 
-from app.database import sync_engine, Base
+from app.db.database import sync_engine, Base
+import app
 
-# Set up basic logging to see what's happening
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("reset_db")
 
 
+# =========================================================
+# AUTO MODEL REGISTRATION
+# =========================================================
+def auto_register_models():
+    """
+    Dynamically imports all SQLAlchemy model modules.
+    Ensures Base.metadata is fully populated before create_all().
+    """
+
+    print("\n🔍 Auto-discovering models...")
+
+    imported = []
+
+    for _, module_name, _ in pkgutil.walk_packages(
+        app.__path__,
+        app.__name__ + ".",
+    ):
+        try:
+            # =================================================
+            # IMPORT FILTER STRATEGY
+            # =================================================
+            if (
+                module_name.endswith(".models")
+                or ".models." in module_name
+                or module_name.endswith(".model")
+                or module_name.endswith("user_profile")
+                or module_name.endswith("service_listing")
+                or module_name.endswith("usage_counter")
+            ):
+                importlib.import_module(module_name)
+                imported.append(module_name)
+
+        except Exception as exc:
+            print(f"⚠️ Failed to import: {module_name}")
+            print(f"   {exc}")
+
+    print(f"\n✅ Imported {len(imported)} model modules")
+
+    for name in sorted(imported):
+        print(f"   • {name}")
+
+
+# =========================================================
+# ENUM SAFETY HOOK (CRITICAL FIX FOR YOUR ERROR)
+# =========================================================
+def ensure_enums_exist():
+    """
+    Pre-creates PostgreSQL enum types BEFORE table creation.
+
+    This prevents:
+    - device_status_enum does not exist
+    - enum type missing errors
+    """
+
+    print("\n🔧 Ensuring PostgreSQL enum types exist...")
+
+    from sqlalchemy.dialects import postgresql
+    from app.core.constants.statuses import DeviceStatus
+
+    # DEVICE STATUS ENUM
+    postgresql.ENUM(
+        *[e.value for e in DeviceStatus],
+        name="device_status_enum",
+        create_type=True,
+    ).create(sync_engine, checkfirst=True)
+
+    print("   ✔ device_status_enum ready")
+
+
+# =========================================================
+# TABLE DEBUG OUTPUT
+# =========================================================
+def show_registered_tables():
+    print("\n📋 Registered Tables")
+    print("=" * 60)
+
+    if not Base.metadata.tables:
+        print("❌ No tables registered")
+        return
+
+    for table_name in sorted(Base.metadata.tables.keys()):
+        print(f"✅ {table_name}")
+
+    print("=" * 60)
+    print(f"Total Tables: {len(Base.metadata.tables)}")
+
+
+# =========================================================
+# MAIN RESET LOGIC
+# =========================================================
 def reset_database():
-    """
-    Drops all existing tables and recreates them fresh.
-    """
-    # ⚠️ CRITICAL: We MUST import all models here.
-    # Base.metadata is a registry. If a model file is never
-    # imported, the registry is empty and drop_all() does nothing.
     try:
-        print("🔍 Registering models...")
-        # Add every model file you have here
-        from app.models.user import User
-        from app.models.payment import Payment
-        from app.models.wallet import Wallet
-        from app.models.usage_counter import UsageCounter
-        from app.models.service_listing import ServiceListing
-        from app.models.blood_request import BloodRequest
-        from app.models.blood_donor import BloodDonor
-        from app.models.healthcare_provider import HealthcareProvider
-        from app.models.transport_request import TransportRequest
+        # STEP 1: IMPORT ALL MODELS
+        auto_register_models()
 
-        # Add any missing specific models found in your git status
-        from app.models.BikeRequest import BikeRequest
-        from app.models.servicemodel import ServiceRequest
+        # STEP 2: SHOW TABLES BEFORE DROP
+        show_registered_tables()
 
-    except ImportError as e:
-        logger.warning(f"Note: Some models could not be imported: {e}")
-
-    print("🧨 Dropping all tables...")
-    try:
-        # Use the sync_engine specifically for this administrative task
+        # STEP 3: DROP TABLES
+        print("\n🧨 Dropping all tables...")
         Base.metadata.drop_all(bind=sync_engine)
-        print("✅ All tables dropped successfully.")
+        Base.metadata.clear()
+        print("✅ Drop complete")
 
-        print("🏗️ Recreating tables...")
+        # STEP 4: ENSURE ENUMS EXIST (CRITICAL FIX)
+        ensure_enums_exist()
+
+        # STEP 5: CREATE TABLES
+        print("\n🏗️ Creating all tables...")
         Base.metadata.create_all(bind=sync_engine)
-        print("✨ Database reset complete. Tables are empty and ready.")
+        print("✅ Create complete")
 
-    except Exception as e:
-        print(f"❌ Error during database reset: {e}")
+        print("\n✨ Database reset complete")
+
+    except Exception as exc:
+        print("\n❌ DATABASE RESET FAILED")
+        print(f"\nError: {exc}")
+        traceback.print_exc()
 
 
+# =========================================================
+# ENTRY POINT
+# =========================================================
 if __name__ == "__main__":
-    confirm = input("This will DELETE ALL DATA in the database. Are you sure? (y/n): ")
-    if confirm.lower() == 'y':
+    print(f"\nDB: {sync_engine.url}")
+
+    confirm = input("\n⚠️ This will DELETE ALL DATA. Continue? (y/n): ")
+
+    if confirm.lower() == "y":
         reset_database()
     else:
-        print("Reset aborted.")
+        print("Aborted")

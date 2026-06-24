@@ -1,92 +1,171 @@
+from __future__ import annotations
+
 import logging
-import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Tuple
+
 from sqlalchemy import update, func, cast, Text
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
-from sqlalchemy.exc import SQLAlchemyError, DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-# Importing from session to ensure we use the updated engine with 60s timeout
 from app.db.session import AsyncSessionLocal
-from app.models.payment import Payment, PaymentStatus
+from app.modules.payment.models import PaymentStatus, Payment
 
 logger = logging.getLogger(__name__)
 
-PAYMENT_EXPIRY_MINUTES = 15
-VERIFICATION_STALE_HOURS = 24
+# =========================================================
+# CONFIG
+# =========================================================
+PAYMENT_EXPIRY_MINUTES: int = 15
+VERIFICATION_STALE_HOURS: int = 24
 
 
-async def expire_unconfirmed_payments():
+# =========================================================
+# INTERNAL HELPERS
+# =========================================================
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _build_metadata_update(reason: str):
     """
-    Mark old pending payments as FAILED in bulk.
-    Updated for 2026: Includes resiliency for high-latency Neon connections.
+    Safely build JSONB update expression.
+
+    NOTE:
+    - Uses jsonb_set
+    - Avoids invalid casts like cast("string", JSONB)
     """
-    # We open the session here, but use a try block to catch connection drops
-    async with AsyncSessionLocal() as session:
+    return func.jsonb_set(
+        func.coalesce(cast(Payment.metadata_json, JSONB), cast("{}", JSONB)),
+        cast(["expiry_reason"], ARRAY(Text)),
+        func.to_jsonb(reason),
+        True,  # create missing
+    )
+
+
+# =========================================================
+# MAIN TASK
+# =========================================================
+async def expire_unconfirmed_payments() -> Tuple[int, int]:
+    """
+    Bulk cleanup for expired payments.
+
+    Returns:
+        (pending_expired_count, stale_verification_count)
+
+    Enterprise guarantees:
+    - Atomic execution per batch
+    - Safe rollback on failure
+    - Resilient to DB/network interruptions
+    - Structured logging for observability
+    """
+
+    async with AsyncSessionLocal() as session:  # type: AsyncSession
         try:
-            now = datetime.now(timezone.utc)
+            now = _now_utc()
+
             pending_cutoff = now - timedelta(minutes=PAYMENT_EXPIRY_MINUTES)
             stale_cutoff = now - timedelta(hours=VERIFICATION_STALE_HOURS)
 
-            # Cast the column to JSONB once for use in jsonb_set
-            json_as_jsonb = cast(Payment.metadata_json, JSONB)
-
-            # Task 1: Cleanup PENDING
+            # -----------------------------
+            # EXPIRE PENDING PAYMENTS
+            # -----------------------------
             stmt_pending = (
                 update(Payment)
                 .where(
                     Payment.status == PaymentStatus.PENDING,
-                    Payment.created_at < pending_cutoff
+                    Payment.created_at < pending_cutoff,
                 )
-                .values({
-                    Payment.status: PaymentStatus.FAILED,
-                    Payment.updated_at: now,
-                    Payment.metadata_json: func.jsonb_set(
-                        func.coalesce(json_as_jsonb, cast({}, JSONB)),
-                        cast(['expiry_reason'], ARRAY(Text)),
-                        cast("ussd_timeout", JSONB)
-                    )
-                })
+                .values(
+                    status=PaymentStatus.FAILED,
+                    updated_at=now,
+                    metadata_json=_build_metadata_update("ussd_timeout"),
+                )
             )
 
-            # Task 2: Cleanup AWAITING_VERIFICATION
+            # -----------------------------
+            # EXPIRE STALE VERIFICATIONS
+            # -----------------------------
             stmt_stale = (
                 update(Payment)
                 .where(
                     Payment.status == PaymentStatus.AWAITING_VERIFICATION,
-                    Payment.created_at < stale_cutoff
+                    Payment.created_at < stale_cutoff,
                 )
-                .values({
-                    Payment.status: PaymentStatus.FAILED,
-                    Payment.updated_at: now,
-                    Payment.metadata_json: func.jsonb_set(
-                        func.coalesce(json_as_jsonb, cast({}, JSONB)),
-                        cast(['expiry_reason'], ARRAY(Text)),
-                        cast("stale_verification", JSONB)
-                    )
-                })
+                .values(
+                    status=PaymentStatus.FAILED,
+                    updated_at=now,
+                    metadata_json=_build_metadata_update("stale_verification"),
+                )
             )
 
-            # ✅ RESILIENCY BLOCK: Execute and Commit
-            # If the connection is closed by Neon/Network during this, we catch it.
-            res_p = await session.execute(stmt_pending)
-            res_s = await session.execute(stmt_stale)
+            # -----------------------------
+            # EXECUTION (RESILIENT BLOCK)
+            # -----------------------------
+            res_pending = await session.execute(stmt_pending)
+            res_stale = await session.execute(stmt_stale)
 
             await session.commit()
 
-            p_rows = res_p.rowcount or 0
-            s_rows = res_s.rowcount or 0
+            pending_count = int(res_pending.rowcount or 0)
+            stale_count = int(res_stale.rowcount or 0)
 
-            if (p_rows + s_rows) > 0:
-                logger.info(f"🧹 Janitor: Cleaned {p_rows} pending and {s_rows} stale payments.")
+            if pending_count or stale_count:
+                logger.info(
+                    "payment_janitor_cleanup",
+                    extra={
+                        "pending_expired": pending_count,
+                        "stale_expired": stale_count,
+                        "timestamp": now.isoformat(),
+                    },
+                )
 
-        except (DBAPIError, ConnectionResetError) as connection_err:
-            # ✅ Specific catch for the Limbe/Singapore connection drops
+            return pending_count, stale_count
+
+        # -----------------------------
+        # NETWORK / DB INSTABILITY
+        # -----------------------------
+        except (DBAPIError, ConnectionResetError) as exc:
             await session.rollback()
+
             logger.warning(
-                f"📡 Database connection flickered during Janitor run. "
-                f"Operation aborted, will retry next cycle. Details: {str(connection_err)}"
+                "payment_janitor_connection_issue",
+                extra={
+                    "error": str(exc),
+                    "action": "rollback",
+                },
             )
-        except Exception as e:
-            # For other logic errors, we still want the full traceback
+
+            return 0, 0
+
+        # -----------------------------
+        # SQL ERRORS (LOGIC / QUERY)
+        # -----------------------------
+        except SQLAlchemyError as exc:
             await session.rollback()
-            logger.error(f"💥 Janitor failed: {str(e)}", exc_info=True)
+
+            logger.error(
+                "payment_janitor_sql_error",
+                extra={
+                    "error": str(exc),
+                },
+                exc_info=True,
+            )
+
+            raise
+
+        # -----------------------------
+        # UNKNOWN FAILURE
+        # -----------------------------
+        except Exception as exc:
+            await session.rollback()
+
+            logger.exception(
+                "payment_janitor_unexpected_failure",
+                extra={
+                    "error": str(exc),
+                },
+            )
+
+            raise

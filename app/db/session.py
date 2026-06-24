@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 # Import the updated objects from your database config
-from app.database import (
+from app.db.database import (
     get_db,
     async_engine,
     AsyncSessionLocal,

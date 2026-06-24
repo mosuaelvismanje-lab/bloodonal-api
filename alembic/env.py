@@ -10,7 +10,7 @@ from alembic import context
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 # 2. Import tools
-from app.database import Base, get_cleaned_url
+from app.db.database import Base, get_cleaned_url
 from app.config import settings
 import app.models  # noqa: F401
 

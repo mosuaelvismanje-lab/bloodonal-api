@@ -1,80 +1,99 @@
 from __future__ import annotations
 
-import os
-import logging
 import atexit
-import uuid
-import time
 import asyncio
+import logging
+import os
+import uuid
 from contextlib import asynccontextmanager
 from typing import List
 
-import uvicorn
 import redis.asyncio as redis
-from fastapi import FastAPI, Depends, APIRouter, Request, status
+import uvicorn
+from fastapi import APIRouter, Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-# Core Infrastructure
-from app.api.endpoints import monitoring
+from app.api.dependencies import get_db
 from app.config import settings
-from app.database import init_db
-from app.db.session import get_db, engine
-
-# 2026 Service & Task Imports
-from app.tasks.payment_tasks import run_payment_worker_loop
+from app.core.api.exceptions import donor_exception_handler
+from app.core.api.middleware import RequestTrackingMiddleware
+from app.core.api.response import error
+from app.db.database import init_db
 from app.firebase_client import _init_firebase
+from app.modules.auth.router.auth_router import router as auth_router
+from app.modules.auth.users.router.user_router import router as user_router
+from app.modules.blood.donors.exceptions import DonorDomainError
+from app.modules.blood.donors.router import router as donor_router
+from app.modules.blood.requests.router import router as blood_request_router
+from app.modules.blood.wallet.router import router as wallet_router
+from app.modules.hospital.subscriptions.router import (
+    router as hospital_subscriptions_router,
+)
+from app.modules.notification.router import router as notifications
+from app.modules.rewards.router import router as rewards_router
+from app.admin.analytics.router import router as admin_analytics_router
+from app.admin.operations.router import router as admin_operations_router
+from app.api.endpoints import monitoring
+from app.api.routes.dispatch_router import router as dispatch_router
+from app.core.realtime.manager import RealtimeManager
+from app.tasks.payment_tasks import run_payment_worker_loop
 
-# -------------------------
-# Logging Configuration
-# -------------------------
+# =========================================================
+# LOGGING
+# =========================================================
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 log = logging.getLogger("bloodonal")
 
-# -------------------------
-# Firebase cleanup
-# -------------------------
-_FIREBASE_TEMP_CRED_FILES: List[str] = []
+# =========================================================
+# GLOBAL STATE
+# =========================================================
+_FIREBASE_TEMP_FILES: List[str] = []
 
 
-def _cleanup_firebase_temp_files():
-    """Purge temporary credential files on exit."""
-    for path in list(_FIREBASE_TEMP_CRED_FILES):
+def _cleanup_firebase_temp_files() -> None:
+    for path in list(_FIREBASE_TEMP_FILES):
         try:
             if os.path.exists(path):
                 os.remove(path)
-                log.info("🗑️ Purged: %s", path)
+                log.info("🧹 Removed temp firebase file: %s", path)
         except OSError as e:
-            log.warning("⚠️ Cleanup failed: %s", e)
-    _FIREBASE_TEMP_CRED_FILES.clear()
+            log.warning("Cleanup error: %s", e)
+
+    _FIREBASE_TEMP_FILES.clear()
 
 
 atexit.register(_cleanup_firebase_temp_files)
 
-# -------------------------
+# =========================================================
 # LIFESPAN
-# -------------------------
+# =========================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("🚀 STARTING BLOODONAL PLATFORM (2026)")
+    log.info("🚀 Starting Bloodonal Platform")
 
-    # Keep optional services safe by default
     app.state.redis = None
-    app.state.background_worker = None
+    app.state.worker = None
+    app.state.realtime_manager = RealtimeManager()
 
-    # DB
+    # -------------------------
+    # DB INIT
+    # -------------------------
     try:
         await init_db()
-        log.info("✅ Database ready")
+        log.info("✅ Database initialized")
     except Exception as e:
-        log.error("❌ Database init failed: %s", e, exc_info=True)
+        log.error("❌ DB init failed: %s", e, exc_info=True)
 
-    # Redis (optional but preferred)
+    # -------------------------
+    # REDIS INIT
+    # -------------------------
     redis_url = settings.REDIS_URL or os.getenv("REDIS_URL")
+
     if redis_url:
         try:
             app.state.redis = redis.from_url(
@@ -85,67 +104,79 @@ async def lifespan(app: FastAPI):
             await app.state.redis.ping()
             log.info("✅ Redis connected")
         except Exception as e:
-            log.warning("⚠️ Redis unavailable, continuing without Redis: %s", e)
+            log.warning("⚠️ Redis unavailable: %s", e)
             app.state.redis = None
     else:
-        log.warning("⚠️ No REDIS_URL provided, skipping Redis")
-        app.state.redis = None
+        log.warning("⚠️ Redis URL not configured")
 
-    # Background worker
+    # -------------------------
+    # PAYMENT WORKER
+    # -------------------------
     try:
-        app.state.background_worker = asyncio.create_task(run_payment_worker_loop())
+        app.state.worker = asyncio.create_task(run_payment_worker_loop())
         log.info("🚀 Payment worker started")
     except Exception as e:
-        log.warning("⚠️ Payment worker failed to start: %s", e, exc_info=True)
-        app.state.background_worker = None
+        log.warning("⚠️ Worker start failed: %s", e)
 
-    # Firebase
+    # -------------------------
+    # FIREBASE INIT
+    # -------------------------
     try:
         _init_firebase()
-        log.info("🔥 Firebase ready")
+        log.info("🔥 Firebase initialized")
     except Exception as e:
-        log.warning("⚠️ Firebase init failed: %s", e, exc_info=True)
+        log.warning("⚠️ Firebase init failed: %s", e)
 
     yield
 
-    log.info("🛑 SHUTDOWN STARTING")
+    # =====================================================
+    # SHUTDOWN
+    # =====================================================
+    log.info("🛑 Shutting down Bloodonal...")
 
-    if getattr(app.state, "background_worker", None) is not None:
-        app.state.background_worker.cancel()
+    # Worker cleanup
+    worker = getattr(app.state, "worker", None)
+    if worker:
+        worker.cancel()
         try:
-            await app.state.background_worker
+            await worker
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            log.warning("⚠️ Background worker shutdown issue: %s", e)
+            log.warning("Worker shutdown error: %s", e)
 
-    if getattr(app.state, "redis", None) is not None:
+    # Redis cleanup
+    redis_client = getattr(app.state, "redis", None)
+    if redis_client:
         try:
-            await app.state.redis.aclose()
+            await redis_client.aclose()
         except Exception as e:
-            log.warning("⚠️ Redis close failed: %s", e)
+            log.warning("Redis close error: %s", e)
 
+    # DB engine cleanup
     try:
+        from app.db.session import engine
         await engine.dispose()
     except Exception as e:
-        log.warning("⚠️ Engine dispose failed: %s", e)
+        log.warning("DB engine dispose error: %s", e)
 
     _cleanup_firebase_temp_files()
-    log.info("🛑 CLEAN SHUTDOWN COMPLETE")
+
+    log.info("✅ Shutdown complete")
 
 
-# -------------------------
+# =========================================================
 # APP
-# -------------------------
+# =========================================================
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.API_VERSION,
-    description="Bloodonal API — 2026 Modular Service Architecture",
+    description="Bloodonal API — Modular Enterprise Architecture",
     lifespan=lifespan,
 )
 
 # -------------------------
-# CORS
+# MIDDLEWARE
 # -------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -155,118 +186,123 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(RequestTrackingMiddleware)
+
 # -------------------------
-# MIDDLEWARE
+# EXCEPTION HANDLERS
 # -------------------------
-@app.middleware("http")
-async def add_process_time(request: Request, call_next):
-    start = time.time()
-    response = await call_next(request)
-    response.headers["X-Process-Time"] = str(time.time() - start)
-    return response
+app.add_exception_handler(DonorDomainError, donor_exception_handler)
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    log.error("CRASH: %s", exc, exc_info=True)
+    log.exception("Unhandled error", exc_info=exc)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"error": "INTERNAL_SERVER_ERROR"}
+        content=error(message="Internal server error"),
     )
 
-# -------------------------
-# ROUTERS IMPORTS
-# -------------------------
-from app.routers import (
-    blood_donor,
-    blood_request,
-    health_provider,
-    health_request,
-    transport_offer,
-    transport_request,
-    chat,
-    notifications,
-    consultation,
-    bike_payment,
-    doctor_payments,
-    nurse_payments,
-    taxi_payment,
-    webhook_payment,
-    servicerouter,
-    blood_request_payments,
-)
 
-from app.api.admin import router as admin_router
-
-# -------------------------
-# VERSION ROUTER
-# -------------------------
+# =========================================================
+# ROUTER REGISTRATION
+# =========================================================
 v1 = APIRouter(prefix=f"/{settings.API_VERSION}")
 
-router_modules = [
-    blood_donor,
-    blood_request,
-    blood_request_payments,
-    health_provider,
-    health_request,
-    transport_offer,
-    transport_request,
-    chat,
+modules = [
+    auth_router,
+    user_router,
+    donor_router,
+    blood_request_router,
+    wallet_router,
     notifications,
-    consultation,
-    bike_payment,
-    doctor_payments,
-    nurse_payments,
-    taxi_payment,
-    webhook_payment,
-    servicerouter,
+    rewards_router,
+    hospital_subscriptions_router,
+    admin_analytics_router,
+    admin_operations_router,
+    dispatch_router,
 ]
 
-for mod in router_modules:
-    v1.include_router(mod.router)
-    log.info("✅ Loaded router: %s", mod.__name__)
+for router in modules:
+    v1.include_router(router)
+    log.info("Loaded router: %s", getattr(router, "prefix", "unknown"))
 
-# Admin + monitoring
-v1.include_router(admin_router, prefix="/admin")
+# Monitoring
 v1.include_router(monitoring.router, prefix="/monitoring")
 
-# Calls system
-calls = APIRouter(prefix="/calls", tags=["calls"])
+# =========================================================
+# CALLS MODULE
+# =========================================================
+calls = APIRouter(prefix="/calls", tags=["Calls"])
 
 
 @calls.post("/session")
-async def call_session(payload: dict):
+async def create_call():
     return {
         "session_id": str(uuid.uuid4()),
         "room": f"bloodonal_{uuid.uuid4().hex[:8]}",
-        "jitsi_server": settings.JITSI_SERVER_URL,
+        "server": settings.JITSI_SERVER_URL,
     }
 
 
 v1.include_router(calls)
-
-# Attach v1
 app.include_router(v1)
 
-# -------------------------
-# HEALTH CHECK
-# -------------------------
-@app.get("/", tags=["health"])
+
+# =========================================================
+# ROOT
+# =========================================================
+@app.get("/")
 async def root():
     return {
-        "status": "online",
-        "version": settings.API_VERSION
+        "status": "ok",
+        "version": settings.API_VERSION,
+        "realtime": True,
+        "dispatch": True,
     }
 
 
-@app.get("/db-test", tags=["health"])
+# =========================================================
+# DB TEST
+# =========================================================
+@app.get("/db-test")
 async def db_test(db=Depends(get_db)):
     await db.execute(text("SELECT 1"))
     return {"db": "ok"}
 
 
-# -------------------------
-# RUN
-# -------------------------
+# =========================================================
+# HEALTH / DIAGNOSTICS
+# =========================================================
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "version": settings.API_VERSION,
+        "dispatch": "ready",
+        "realtime": "ready",
+    }
+
+
+@app.get("/health/redis")
+async def redis_health():
+    redis_client = getattr(app.state, "redis", None)
+    if redis_client is None:
+        return {"redis": "unavailable"}
+
+    try:
+        await redis_client.ping()
+        return {"redis": "ok"}
+    except Exception:
+        return {"redis": "down"}
+
+
+# =========================================================
+# DEV ENTRY
+# =========================================================
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+    )

@@ -1,13 +1,13 @@
 import uuid
 import enum
 from datetime import datetime, timezone
-from typing import Optional, List, Dict
+from typing import Optional
 
 from sqlalchemy import String, DateTime, Enum as SAEnum, JSON, func, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database import Base
+from app.db.database import Base
 
 
 # --- Enums for strict state management ---

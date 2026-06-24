@@ -1,84 +1,181 @@
+from __future__ import annotations
+
 import uuid
-from datetime import datetime, timedelta, timezone
-from sqlalchemy import Column, String, Float, Boolean, DateTime, Text, ForeignKey, func, Index
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Optional, Dict, Any
+
+from sqlalchemy import (
+    String,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    Index,
+)
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.database import Base
-
-class ServiceUser(Base):
-    """
-    Unified Profile Hub (2026).
-    Acts as the central identity for Donors, Drivers, Nurses, and Patients.
-    """
-    __tablename__ = "service_users"
-    # ✅ FIX: Prevents InvalidRequestError if the table is already in MetaData
-    __table_args__ = {"extend_existing": True}
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    full_name = Column(String, nullable=False)
-    role = Column(String, nullable=False, index=True)
-    city = Column(String, nullable=False, index=True)
-    profile_image = Column(Text, nullable=True)
-
-    # Relationship to their created requests
-    listings = relationship(
-        "ServiceListing",
-        back_populates="owner",
-        cascade="all, delete-orphan",
-        foreign_keys="[ServiceListing.user_id]"
-    )
+from app.db.database import Base
 
 
 class ServiceListing(Base):
     """
-    POLYMORPHIC CORE: The single switchboard for all service requests.
-    Handles Blood, Taxi, Nursing, and Consultations via JSONB 'details'.
+    Core domain entity representing a service offered by a user.
+
+    Activation targets:
+    - Paid activation
+    - Free quota activation
+    - Admin override publishing
+    - AI ranking and analytics
     """
+
     __tablename__ = "service_listings"
 
-    # Identity & Fulfillment
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("service_users.id"), nullable=False, index=True)
-    provider_id = Column(UUID(as_uuid=True), ForeignKey("service_users.id"), nullable=True, index=True)
-
-    # Core Logic Switches
-    service_type = Column(String, nullable=False, index=True)
-    status = Column(String, default="PENDING", server_default="PENDING", index=True)
-    is_published = Column(Boolean, default=False, server_default="false", index=True)
-    is_paid = Column(Boolean, default=False, server_default="false")
-    activation_ref = Column(String, nullable=True, unique=True, index=True)
-
-    # Data Payload
-    title = Column(String, nullable=False)
-    location_city = Column(String, nullable=False, index=True)
-    price_offered = Column(Float, default=0.0)
-    details = Column(JSONB, nullable=False, server_default='{}')
-
-    # Timestamps & Expiry
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
-
-    # Relationships
-    owner = relationship("ServiceUser", foreign_keys=[user_id], back_populates="listings")
-    provider = relationship("ServiceUser", foreign_keys=[provider_id])
-
-    # ✅ Performance: Optimized Live Feed and Table Meta
-    __table_args__ = (
-        Index("ix_active_published_listings", "service_type", "is_published", "status"),
-        {"extend_existing": True}
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
     )
 
-    def __repr__(self):
-        return f"<ServiceListing(id={str(self.id)[:8]}, type={self.service_type}, status={self.status})>"
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.uid", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
 
-    @property
-    def is_expired(self) -> bool:
-        if not self.expires_at:
-            return False
-        return datetime.now(timezone.utc) > self.expires_at
+    user = relationship("User", backref="service_listings")
 
-    @staticmethod
-    def calculate_default_expiry():
-        return datetime.now(timezone.utc) + timedelta(days=2)
+    service_type: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        index=True,
+    )
+
+    title: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    description: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+    )
+
+    amount: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 2),
+        nullable=True,
+    )
+
+    fee: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 2),
+        nullable=True,
+    )
+
+    is_published: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        index=True,
+    )
+
+    published_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    activation_ref: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    idempotency_key: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+
+    metadata_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True,
+    )
+
+    def mark_published(self) -> None:
+        self.is_published = True
+        self.published_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
+
+    def mark_unpublished(self) -> None:
+        self.is_published = False
+        self.published_at = None
+        self.updated_at = datetime.now(timezone.utc)
+
+    def attach_metadata(self, data: Dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            return
+
+        current = self.metadata_json or {}
+        current.update(data)
+        self.metadata_json = current
+        self.updated_at = datetime.now(timezone.utc)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "user_id": str(self.user_id),
+            "service_type": self.service_type,
+            "title": self.title,
+            "description": self.description,
+            "amount": float(self.amount) if self.amount is not None else None,
+            "fee": float(self.fee) if self.fee is not None else None,
+            "is_published": self.is_published,
+            "published_at": self.published_at.isoformat() if self.published_at else None,
+            "activation_ref": self.activation_ref,
+            "idempotency_key": self.idempotency_key,
+            "metadata_json": self.metadata_json,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"<ServiceListing(id={self.id}, "
+            f"service_type={self.service_type}, "
+            f"published={self.is_published})>"
+        )
+
+
+Index(
+    "ix_service_listing_user_service",
+    ServiceListing.user_id,
+    ServiceListing.service_type,
+)
+
+Index(
+    "ix_service_listing_publish_state",
+    ServiceListing.is_published,
+    ServiceListing.created_at,
+)
+
+Index(
+    "ix_service_listing_activation",
+    ServiceListing.activation_ref,
+)

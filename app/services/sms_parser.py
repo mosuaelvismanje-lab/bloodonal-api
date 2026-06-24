@@ -1,74 +1,144 @@
+from __future__ import annotations
+
 import re
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+
+# =========================================================
+# DTO
+# =========================================================
 @dataclass
 class ParsedSMS:
     transaction_id: str
     amount: float
-    sender: str  # MTN or ORANGE
+    sender: str
     raw_body: str
 
+
+# =========================================================
+# PARSER
+# =========================================================
 class SMSParser:
     """
-    Utility to parse Cameroon Mobile Money SMS strings.
-    Extracts Transaction IDs and Amounts for 2026 standardized formats.
+    Enterprise-grade SMS parser for Cameroon Mobile Money.
+
+    Guarantees:
+    - Safe parsing (no crashes)
+    - Provider auto-detection
+    - Structured logging
+    - Clean normalization
     """
 
-    # --- REGEX PATTERNS ---
-    # MTN Example: "Transfer confirmed. 500 FCFA sent to... Transaction ID: 2501234567"
-    # MTN Cash-in: "You have received 500 FCFA from... TransID: 2501234567"
+    # =========================
+    # REGEX PATTERNS
+    # =========================
     MTN_PATTERN = r"(?:Transaction ID|TransID):\s*(\d{10,12})"
-    MTN_AMOUNT_PATTERN = r"(\d+(?:\.\d+)?)\s*FCFA"
+    MTN_AMOUNT_PATTERN = r"([\d,]+(?:\.\d+)?)\s*FCFA"
 
-    # Orange Example: "Le transfert de 500 FCFA au 69XXXXXXX a réussi. ID: CM26..."
-    # Orange Cash-in: "Depot de 500 FCFA reussi. Reference: PP26..."
-    ORANGE_PATTERN = r"(?:ID|Reference|Ref):\s*([A-Z0-9]{10,20})"
-    ORANGE_AMOUNT_PATTERN = r"(\d+(?:\.\d+)?)\s*FCFA"
+    ORANGE_PATTERN = r"(?:ID|Reference|Ref):\s*([A-Z0-9]{8,20})"
+    ORANGE_AMOUNT_PATTERN = r"([\d,]+(?:\.\d+)?)\s*FCFA"
 
+    # =========================
+    # NORMALIZATION
+    # =========================
+    @staticmethod
+    def _normalize_body(body: str) -> str:
+        """Remove noise, normalize whitespace."""
+        return " ".join(body.strip().split())
+
+    @staticmethod
+    def _safe_amount(value: str) -> float:
+        """Convert string to float safely."""
+        try:
+            return float(value.replace(",", ""))
+        except Exception:
+            return 0.0
+
+    # =========================
+    # MTN PARSER
+    # =========================
     @classmethod
     def parse_mtn(cls, body: str) -> Optional[ParsedSMS]:
-        """Parses MTN MoMo Cameroon SMS."""
-        tx_id_match = re.search(cls.MTN_PATTERN, body, re.IGNORECASE)
+        tx_match = re.search(cls.MTN_PATTERN, body, re.IGNORECASE)
         amount_match = re.search(cls.MTN_AMOUNT_PATTERN, body, re.IGNORECASE)
 
-        if tx_id_match and amount_match:
-            return ParsedSMS(
-                transaction_id=tx_id_match.group(1),
-                amount=float(amount_match.group(1).replace(",", "")),
-                sender="MTN",
-                raw_body=body
-            )
-        return None
+        if not tx_match or not amount_match:
+            return None
 
+        parsed = ParsedSMS(
+            transaction_id=tx_match.group(1),
+            amount=cls._safe_amount(amount_match.group(1)),
+            sender="MTN",
+            raw_body=body,
+        )
+
+        logger.info(
+            "sms_parsed_mtn",
+            extra={
+                "tx_id": parsed.transaction_id,
+                "amount": parsed.amount,
+            },
+        )
+
+        return parsed
+
+    # =========================
+    # ORANGE PARSER
+    # =========================
     @classmethod
     def parse_orange(cls, body: str) -> Optional[ParsedSMS]:
-        """Parses Orange Money Cameroon SMS."""
-        tx_id_match = re.search(cls.ORANGE_PATTERN, body, re.IGNORECASE)
+        tx_match = re.search(cls.ORANGE_PATTERN, body, re.IGNORECASE)
         amount_match = re.search(cls.ORANGE_AMOUNT_PATTERN, body, re.IGNORECASE)
 
-        if tx_id_match and amount_match:
-            return ParsedSMS(
-                transaction_id=tx_id_match.group(1),
-                amount=float(amount_match.group(1).replace(",", "")),
-                sender="ORANGE",
-                raw_body=body
-            )
-        return None
+        if not tx_match or not amount_match:
+            return None
 
+        parsed = ParsedSMS(
+            transaction_id=tx_match.group(1),
+            amount=cls._safe_amount(amount_match.group(1)),
+            sender="ORANGE",
+            raw_body=body,
+        )
+
+        logger.info(
+            "sms_parsed_orange",
+            extra={
+                "tx_id": parsed.transaction_id,
+                "amount": parsed.amount,
+            },
+        )
+
+        return parsed
+
+    # =========================
+    # UNIVERSAL PARSER
+    # =========================
     @classmethod
     def parse_any(cls, body: str) -> Optional[ParsedSMS]:
         """
-        Heuristic check to determine provider and extract data.
-        Ideal for the Android 'User Consent' payload.
-        """
-        # Clean up whitespace/newlines from SMS
-        clean_body = " ".join(body.split())
+        Auto-detect provider and parse SMS.
 
-        # Try MTN first
+        Flow:
+        1. Normalize
+        2. Try MTN
+        3. Try Orange
+        4. Log failure safely
+        """
+
+        if not body or not body.strip():
+            logger.warning(
+                "sms_parse_empty_body",
+                extra={"body": body},
+            )
+            return None
+
+        clean_body = cls._normalize_body(body)
+
+        # Try MTN
         parsed = cls.parse_mtn(clean_body)
         if parsed:
             return parsed
@@ -78,5 +148,12 @@ class SMSParser:
         if parsed:
             return parsed
 
-        logger.warning(f"Failed to parse SMS body: {body[:50]}...")
+        # Failure (structured log)
+        logger.warning(
+            "sms_parse_failed",
+            extra={
+                "preview": clean_body[:80],
+            },
+        )
+
         return None

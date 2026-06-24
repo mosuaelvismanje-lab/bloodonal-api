@@ -7,8 +7,10 @@ from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
+from app.modules.payment.models import Payment, PaymentStatus
+
 # ✅ Using the unified model we established
-from app.models.payment import Payment, PaymentStatus
+
 
 logger = logging.getLogger(__name__)
 
